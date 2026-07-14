@@ -1,0 +1,26 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+.DS_Store
+.streamlit/secrets.toml
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+data/generated/
+frontend/node_modules/
+frontend/dist/
+
+# Retired local prototype files; the GitHub release is frontend-only.
+/.agents/
+/.streamlit/
+/.vscode/
+/data/
+/datasets/
+/scripts/
+/src/
