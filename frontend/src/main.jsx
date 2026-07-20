@@ -1,11 +1,12 @@
-import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import React, { forwardRef, useDeferredValue, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AgGridReact } from "ag-grid-react";
 import Papa from "papaparse";
+import { ALL_ISSUE_COLUMNS, calculateColumnFill, calculateMultiColumnCustomFill, getFillMethodsForType } from "./fillMethods.js";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-quartz.css";
 import "./styles.css";
-
+//npm.cmd run dev
 const TYPE_OPTIONS = ["Text", "Number", "Integer", "Date", "Email", "Phone", "Boolean", "Category"];
 const EMAIL_PATTERN = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
 const PHONE_PATTERN = /^\+?[0-9][0-9\s().-]{6,}[0-9]$/;
@@ -47,6 +48,7 @@ const RELATIONSHIP_STORAGE_KEY = "cleansheet.column-relationships";
 const RELATIONSHIP_TOLERANCE = 0.01;
 const HISTORY_LIMIT = 25;
 const EMPTY_RELATIONSHIP_DRAFT = { id: "", name: "", targetColumn: "", formula: "", enabled: true };
+const EMPTY_FILL_DRAFT = { column: "", scope: "both", method: "custom", customValue: "" };
 const DEFAULT_REGEX_BUILDER = {
   allowed: "alphanumeric",
   customCharacters: "",
@@ -81,7 +83,6 @@ function App() {
   const [selectedColumn, setSelectedColumn] = useState("");
   const [isValidationPanelOpen, setIsValidationPanelOpen] = useState(false);
   const [currentIssueIndex, setCurrentIssueIndex] = useState(-1);
-  const [validationFillValue, setValidationFillValue] = useState("");
   const [numericConversionNotice, setNumericConversionNotice] = useState("");
   const [pendingConfirmation, setPendingConfirmation] = useState(null);
   const [isRuleBuilderOpen, setIsRuleBuilderOpen] = useState(false);
@@ -92,7 +93,7 @@ function App() {
   const [existingCategoryFilter, setExistingCategoryFilter] = useState("");
   const [ruleBuilderTestValue, setRuleBuilderTestValue] = useState("");
   const [savedRegexRules, setSavedRegexRules] = useState(readSavedRegexRules);
-  const [isRegexCheatSheetOpen, setIsRegexCheatSheetOpen] = useState(false);
+  const [isInformationOpen, setIsInformationOpen] = useState(false);
   const [regexTestValue, setRegexTestValue] = useState("");
   const [columnRegexSummary, setColumnRegexSummary] = useState(null);
   const [regexBuilder, setRegexBuilder] = useState(DEFAULT_REGEX_BUILDER);
@@ -105,7 +106,9 @@ function App() {
   const [history, setHistory] = useState({ past: [], future: [] });
   const [isFindReplaceOpen, setIsFindReplaceOpen] = useState(false);
   const [findReplaceDraft, setFindReplaceDraft] = useState({ find: "", replace: "", mode: "exact", caseSensitive: true });
-  const [isWeightedFillOpen, setIsWeightedFillOpen] = useState(false);
+  const [isFillDialogOpen, setIsFillDialogOpen] = useState(false);
+  const [fillDraft, setFillDraft] = useState(EMPTY_FILL_DRAFT);
+  const deferredFillDraft = useDeferredValue(fillDraft);
 
   useEffect(() => {
     window.localStorage.setItem(REGEX_STORAGE_KEY, JSON.stringify(savedRegexRules));
@@ -116,14 +119,15 @@ function App() {
   }, [relationshipRules]);
 
   useEffect(() => {
-    if (!pendingConfirmation && !isRuleBuilderOpen) return undefined;
+    if (!pendingConfirmation && !isRuleBuilderOpen && !isFillDialogOpen) return undefined;
     const handleKeyDown = (event) => {
       if (event.key === "Escape") setPendingConfirmation(null);
       if (event.key === "Escape") setIsRuleBuilderOpen(false);
+      if (event.key === "Escape") setIsFillDialogOpen(false);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isRuleBuilderOpen, pendingConfirmation]);
+  }, [isFillDialogOpen, isRuleBuilderOpen, pendingConfirmation]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -171,6 +175,11 @@ function App() {
     return counts;
   }, [validationIssues]);
 
+  const fillIssueColumns = useMemo(
+    () => visibleColumns.filter((column) => (issueCountByColumn[column] ?? 0) > 0),
+    [issueCountByColumn, visibleColumns],
+  );
+
   const categoryOptionsByColumn = useMemo(() => {
     const optionsByColumn = {};
     for (const column of columns) {
@@ -199,10 +208,42 @@ function App() {
     () => isFindReplaceOpen ? getFindReplacePreview() : { valid: true, count: 0, examples: [] },
     [findReplaceDraft, isFindReplaceOpen, rows, visibleColumns],
   );
-  const weightedFillPreview = useMemo(
-    () => getWeightedFillPreview(rows, selectedColumn, selectedRule),
-    [rows, selectedColumn, selectedRule],
-  );
+  const fillColumnRule = fillDraft.column && fillDraft.column !== ALL_ISSUE_COLUMNS
+    ? resolveColumnRule(columnRules[fillDraft.column] ?? createColumnRule("Text"), regexRuleLibrary)
+    : null;
+  const fillMethods = fillDraft.column === ALL_ISSUE_COLUMNS
+    ? getFillMethodsForType("").filter((method) => method.id === "custom")
+    : getFillMethodsForType(fillColumnRule?.type ?? "Text");
+  const fillPreview = useMemo(() => {
+    if (!isFillDialogOpen || !deferredFillDraft.column) return { valid: false, error: "Choose a column.", targetCount: 0, changeCount: 0, skippedCount: 0, examples: [], allocations: [] };
+    if (deferredFillDraft.column === ALL_ISSUE_COLUMNS) {
+      const columnOptions = fillIssueColumns.map((column) => {
+        const rule = resolveColumnRule(columnRules[column] ?? createColumnRule("Text"), regexRuleLibrary);
+        return { column, isValid: (value) => validateValue(value, rule).valid };
+      });
+      return calculateMultiColumnCustomFill(rows, columnOptions, deferredFillDraft);
+    }
+    const rule = resolveColumnRule(columnRules[deferredFillDraft.column] ?? createColumnRule("Text"), regexRuleLibrary);
+    return calculateColumnFill(rows, {
+      ...deferredFillDraft,
+      type: rule.type,
+      isValid: (value) => validateValue(value, rule).valid,
+    });
+  }, [columnRules, deferredFillDraft, fillIssueColumns, isFillDialogOpen, regexRuleLibrary, rows]);
+  const isFillPreviewPending = deferredFillDraft !== fillDraft;
+  const customFillWarning = useMemo(() => {
+    if (!isFillDialogOpen || fillDraft.method !== "custom") return "";
+    if (isEmptyValue(fillDraft.customValue)) return "Empty replacements will still be reported as missing on the next scan.";
+    const columnsToCheck = fillDraft.column === ALL_ISSUE_COLUMNS ? fillIssueColumns : [fillDraft.column];
+    const failingColumns = columnsToCheck.filter((column) => {
+      const rule = resolveColumnRule(columnRules[column] ?? createColumnRule("Text"), regexRuleLibrary);
+      return !validateValue(fillDraft.customValue, rule).valid;
+    });
+    if (!failingColumns.length) return "";
+    return fillDraft.column === ALL_ISSUE_COLUMNS
+      ? `This value will still be invalid in ${failingColumns.length.toLocaleString()} column${failingColumns.length === 1 ? "" : "s"}. You can apply it anyway.`
+      : "This value does not pass the current column rule. You can apply it anyway.";
+  }, [columnRules, fillDraft, fillIssueColumns, isFillDialogOpen, regexRuleLibrary]);
   const invalidVisibleRegexColumns = useMemo(
     () => visibleColumns.filter((column) => {
       const rule = visibleColumnRules[column];
@@ -761,6 +802,13 @@ function App() {
     }));
   }
 
+  function insertRelationshipToken(token) {
+    setRelationshipDraft((currentDraft) => ({
+      ...currentDraft,
+      formula: `${currentDraft.formula}${currentDraft.formula ? " " : ""}${token}`,
+    }));
+  }
+
   function saveRelationshipRule() {
     if (!relationshipDraftValidation.valid) return;
     const nextRule = {
@@ -885,68 +933,46 @@ function App() {
     setHasUnscannedChanges(true);
   }
 
-  function fillValidationIssueCells() {
-    if (!validationIssues.length) return;
-    requestConfirmation({
-      title: "Fill detected values?",
-      message: `Fill ${validationIssues.length.toLocaleString()} detected cell${validationIssues.length === 1 ? "" : "s"} with ${validationFillValue === "" ? "an empty value" : `"${validationFillValue}"`}?`,
-      confirmLabel: "Fill values",
-      tone: "default",
-      onConfirm: performFillValidationIssueCells,
-    });
+  function openFillDialog(preferredColumn = "") {
+    if (!fillIssueColumns.length) return;
+    const nextColumn = fillIssueColumns.includes(preferredColumn)
+      ? preferredColumn
+      : fillIssueColumns.includes(activeIssue?.column)
+        ? activeIssue.column
+        : fillIssueColumns[0];
+    setFillDraft({ ...EMPTY_FILL_DRAFT, column: nextColumn });
+    setIsFillDialogOpen(true);
   }
 
-  function performFillValidationIssueCells() {
-    const columnsToFillByRow = new Map();
-    for (const issue of validationIssues) {
-      const rowKey = issue.rowId ?? issue.row - 1;
-      const rowColumns = columnsToFillByRow.get(rowKey) ?? new Set();
-      rowColumns.add(issue.column);
-      columnsToFillByRow.set(rowKey, rowColumns);
+  function changeFillColumn(column) {
+    setFillDraft((currentDraft) => ({ ...currentDraft, column, method: "custom" }));
+  }
+
+  function buildCurrentFillPlan(collectChanges = false) {
+    if (fillDraft.column === ALL_ISSUE_COLUMNS) {
+      const columnOptions = fillIssueColumns.map((column) => {
+        const rule = resolveColumnRule(columnRules[column] ?? createColumnRule("Text"), regexRuleLibrary);
+        return { column, isValid: (value) => validateValue(value, rule).valid };
+      });
+      return calculateMultiColumnCustomFill(rows, columnOptions, fillDraft, collectChanges);
     }
-    const changes = [];
-    const nextRows = rows.map((row, rowIndex) => {
-      const rowColumns = columnsToFillByRow.get(row.__rowId) ?? columnsToFillByRow.get(rowIndex);
-      if (!rowColumns) return row;
-      const nextRow = { ...row };
-      for (const column of rowColumns) {
-        changes.push({ rowId: row.__rowId, column, before: row[column], after: validationFillValue });
-        nextRow[column] = validationFillValue;
-      }
-      return nextRow;
-    });
-    setRows(nextRows);
-    if (changes.length) pushHistory({ label: "Fill detected values", kind: "cells", changes });
-    setValidationIssues([]);
-    setRelationshipIssues([]);
-    setSelectedRelationshipFixes([]);
-    setCurrentIssueIndex(-1);
-    setIsValidationPanelOpen(false);
-    setHasUnscannedChanges(true);
+    const rule = resolveColumnRule(columnRules[fillDraft.column] ?? createColumnRule("Text"), regexRuleLibrary);
+    return calculateColumnFill(rows, {
+      ...fillDraft,
+      type: rule.type,
+      isValid: (value) => validateValue(value, rule).valid,
+    }, collectChanges);
   }
 
-  function applyWeightedCategoryFill() {
-    if (!weightedFillPreview.valid || !weightedFillPreview.assignments.length) return;
-    setIsWeightedFillOpen(false);
-    requestConfirmation({
-      title: `Fill ${selectedColumn} by distribution?`,
-      message: `Replace ${weightedFillPreview.assignments.length.toLocaleString()} invalid or empty values using the current category distribution. This can be undone.`,
-      confirmLabel: "Fill by distribution",
-      tone: "default",
-      onConfirm: () => {
-        const assignmentByRowId = new Map(weightedFillPreview.assignments.map((item) => [item.rowId, item.value]));
-        const changes = [];
-        const nextRows = rows.map((row) => {
-          const value = assignmentByRowId.get(row.__rowId);
-          if (value === undefined) return row;
-          changes.push({ rowId: row.__rowId, column: selectedColumn, before: row[selectedColumn], after: value });
-          return { ...row, [selectedColumn]: value };
-        });
-        setRows(nextRows);
-        pushHistory({ label: `Fill ${selectedColumn} by distribution`, kind: "cells", changes });
-        clearDerivedResults();
-      },
-    });
+  function applyFillPlan() {
+    const plan = buildCurrentFillPlan(true);
+    if (!plan.valid || !plan.changes?.length) return;
+    const methodLabel = fillMethods.find((method) => method.id === fillDraft.method)?.label ?? "Fill values";
+    setRows((currentRows) => applyCellChanges(currentRows, plan.changes, "redo"));
+    pushHistory({ label: `${methodLabel}: ${fillDraft.column === ALL_ISSUE_COLUMNS ? "all issue columns" : fillDraft.column}`, kind: "cells", changes: plan.changes });
+    setIsFillDialogOpen(false);
+    setIsValidationPanelOpen(false);
+    clearDerivedResults();
   }
 
   function convertSelectedNumericColumn(targetType) {
@@ -1069,11 +1095,9 @@ function App() {
       <aside className="sidebar">
         <div className="brand-lockup">
           <div className="brand">CleanSheet</div>
-          <p>CSV cleaning workspace for fast edits and type checks.</p>
         </div>
 
         <section className="control-section">
-          <div className="section-label">Dataset</div>
           <h2>Load data</h2>
           <button type="button" onClick={loadSample}>Load Sample Dataset</button>
           <label className="file-picker">
@@ -1084,7 +1108,6 @@ function App() {
         </section>
 
         <section className="control-section">
-          <div className="section-label">View</div>
           <h2>Visible columns</h2>
           <div className="view-summary">
             <span>{visibleColumns.length}/{columns.length} shown</span>
@@ -1143,9 +1166,9 @@ function App() {
         <section className="panel">
           <div className="workspace-header">
             <div>
-              <div className="section-label">Workspace</div>
               <h1>{fileName}</h1>
-              <p>Click cells to edit. Select a column to tune its type and format.</p>
+              <p>Double click cells to edit. Select a column to change its type and format.</p>
+              <p className="unsaved-changes-warning">The app doesn't save changes. Refreshing the page will discard all changes (Use Export) (:</p>
             </div>
             <div className="workspace-actions">
               <button type="button" onClick={scanForIssues} disabled={!canScan}>
@@ -1164,35 +1187,65 @@ function App() {
               <ToolbarChip label="Issues" value={validationIssues.length.toLocaleString()} tone="danger" />
             </div>
             <div className={`status-chip ${hasUnscannedChanges ? "warning" : "ok"}`}>
-              {hasUnscannedChanges ? "Needs scan" : "Up to date"}
+              {hasUnscannedChanges ? "Needs scan" : "Last change"}
               {lastScannedAt ? ` • ${lastScannedAt.toLocaleTimeString()}` : ""}
             </div>
           </div>
 
-          <section className="regex-cheat-sheet">
+          <section className="information-panel">
             <button
               type="button"
-              className="regex-cheat-toggle"
-              onClick={() => setIsRegexCheatSheetOpen(!isRegexCheatSheetOpen)}
+              className="information-toggle"
+              onClick={() => setIsInformationOpen(!isInformationOpen)}
             >
-              <span>Regex Cheat Sheet</span>
-              <span>{isRegexCheatSheetOpen ? "Hide templates" : "Show templates"}</span>
+              <span>Information (Tutorial)</span>
+              <span>{isInformationOpen ? "Hide walkthrough" : "Sample walkthrough"}</span>
             </button>
-            {isRegexCheatSheetOpen && (
-              <div className="regex-template-grid">
-                {REGEX_CHEAT_SHEET.map((template) => (
-                  <article className="regex-template" key={template.id}>
+            {isInformationOpen && (
+              <div className="information-content">
+                <div className="information-intro">
+                  <strong>Try it with the sample dataset</strong>
+                  <p>Load the sample, then follow the steps below to get familiar with the project</p>
+                </div>
+                <ol className="walkthrough-list">
+                  <li>
+                    <span>1</span>
+                    <div><strong>Load the sample</strong><p>Use <HintCode hint="Loads the built-in practice CSV without uploading a file.">Load Sample Dataset</HintCode> in the sidebar. It contains a dirty dataset I 'borrowed' from Kaggle</p></div>
+                  </li>
+                  <li>
+                    <span>2</span>
+                    <div><strong>Choose what to scan</strong><p>Only visible columns are included when you <HintCode hint="Checks every visible cell against the type and format selected for its column. Changing a column type changes what the next scan considers valid.">Scan</HintCode>. For now, <HintCode hint="Removes a column from the table and excludes it from scanning.">Hide</HintCode> everything except <span className="column-reference">Quantity</span>, <span className="column-reference">Price Per Unit</span>, and <span className="column-reference">Total Spent</span></p></div>
+                  </li>
+                  <li>
+                    <span>3</span>
+                    <div><strong>Set column types</strong><p>Choose <code>Number</code> for <span className="column-reference">Quantity</span>, <span className="column-reference">Price Per Unit</span>, and <span className="column-reference">Total Spent</span> by clicking their column names in the table below. Types do not change your data they tell the scanner what each cell should look like also every visible cell is checked against its column's selected type when you scan</p></div>
+                  </li>
+                  <li>
+                    <span>4</span>
                     <div>
-                      <strong>{template.label}</strong>
-                      <p>{template.description}</p>
+                      <strong>Link the three number columns</strong>
+                      <p>In <HintCode hint="Creates formulas between columns to find and fill missing calculated values.">Column Relationships</HintCode>, add these three rules:</p>
+                      <div className="formula-reference-list">
+                        <span className="formula-reference">Total Spent = [Quantity] * [Price Per Unit]</span>
+                        <span className="formula-reference">Quantity = [Total Spent] / [Price Per Unit]</span>
+                        <span className="formula-reference">Price Per Unit = [Total Spent] / [Quantity]</span>
+                      </div>
+                      <p>Click <HintCode hint="Runs every enabled relationship formula against the dataset.">Check all relationships</HintCode>, select the fixable rows, then apply the selected fixes to fill missing values</p>
                     </div>
-                    <code>{template.pattern}</code>
-                    <div className="template-examples">
-                      <span>Pass: {template.examples[0]?.valid}</span>
-                      <span>Fail: {template.examples[0]?.invalid}</span>
-                    </div>
-                  </article>
-                ))}
+                  </li>
+                  <li>
+                    <span>5</span>
+                    <div><strong>Fix data directly</strong><p>Use <HintCode hint="Jumps the table to the next detected problem.">Next Row</HintCode> to jump to an issue, then click the cell and edit it. Category cells offer existing values as choices</p></div>
+                  </li>
+                  <li>
+                    <span>6</span>
+                    <div><strong>Scan for remaining problems</strong><p>Click <HintCode hint="Checks every visible cell against its column type again after your edits.">Scan Again</HintCode>. The sample's <code>ERROR</code> value in <span className="column-reference">Total Spent</span> should be caught once that column is set to Number</p></div>
+                  </li>
+                  <li>
+                    <span>7</span>
+                    <div><strong>Export when finished</strong><p>Run one final scan, then choose <HintCode hint="Downloads the currently visible columns as a new CSV file.">Export CSV</HintCode> to download the cleaned visible columns</p></div>
+                  </li>
+                </ol>
               </div>
             )}
           </section>
@@ -1211,7 +1264,7 @@ function App() {
                 <div className="relationship-editor">
                   <div>
                     <span className="field-label">{relationshipDraft.id ? "Edit relationship" : "New relationship"}</span>
-                    <p>Use column buttons to build a safe calculation. Example: <code>[Unit amount] * [Unit price]</code></p>
+                    <p>Build a formula from your columns. Example: <code>[Unit amount] * [Unit price]</code></p>
                   </div>
                   <label>
                     <span>Rule name</span>
@@ -1228,6 +1281,19 @@ function App() {
                     <span>Formula</span>
                     <input value={relationshipDraft.formula} onChange={(event) => updateRelationshipDraft("formula", event.target.value)} placeholder="[Unit amount] * [Unit price]" />
                   </label>
+                  <div className="formula-tools">
+                    <span className="field-label">Math symbols</span>
+                    <div className="formula-token-picker" aria-label="Insert math symbols">
+                      <button type="button" onClick={() => insertRelationshipToken("+")} title="Add">+ Add</button>
+                      <button type="button" onClick={() => insertRelationshipToken("-")} title="Subtract or make the next value negative">- Subtract</button>
+                      <button type="button" onClick={() => insertRelationshipToken("*")} title="Multiply">* Multiply</button>
+                      <button type="button" onClick={() => insertRelationshipToken("/")} title="Divide">/ Divide</button>
+                      <button type="button" onClick={() => insertRelationshipToken("%")} title="Remainder after division">% Remainder</button>
+                      <button type="button" onClick={() => insertRelationshipToken("(")} title="Open a grouped calculation">( Open</button>
+                      <button type="button" onClick={() => insertRelationshipToken(")")} title="Close a grouped calculation">) Close</button>
+                    </div>
+                    <p><code>()</code> groups calculations. <code>*</code>, <code>/</code>, and <code>%</code> run before <code>+</code> and <code>-</code>. Add a number directly in the formula when needed.</p>
+                  </div>
                   <div className="formula-column-picker">
                     {columns.map((column) => (
                       <button type="button" key={column} onClick={() => insertRelationshipColumn(column)}>{column}</button>
@@ -1320,32 +1386,19 @@ function App() {
             </button>
 
             {isValidationPanelOpen && (
-              validationIssues.length === 0 ? (
-                <div className="success-box">No type mismatches found.</div>
-              ) : (
-                <>
+              <div className="validation-content">
+                {validationIssues.length === 0 ? (
+                  <div className="success-box">No type mismatches found.</div>
+                ) : (
+                  <>
                   <div className="issue-actions">
                     <span>
                       Showing all {validationIssues.length.toLocaleString()} validation issues across {visibleColumns.length.toLocaleString()} visible columns.
                     </span>
                     <div className="issue-buttons">
-                      <label className="validation-fill-control">
-                        <span>Fill detected cells</span>
-                        <input
-                          type="text"
-                          value={validationFillValue}
-                          onChange={(event) => setValidationFillValue(event.target.value)}
-                          placeholder="NaN or leave empty"
-                        />
-                      </label>
-                      <button type="button" className="secondary-button" onClick={fillValidationIssueCells}>
-                        Fill all detected values
+                      <button type="button" onClick={() => openFillDialog(selectedColumn)}>
+                        Fill invalid values
                       </button>
-                      {selectedRule?.type === "Category" && (
-                        <button type="button" className="secondary-button" onClick={() => setIsWeightedFillOpen(true)} disabled={!weightedFillPreview.valid || !weightedFillPreview.assignments.length}>
-                          Fill invalid by distribution
-                        </button>
-                      )}
                       <button type="button" className="secondary-button" onClick={exportIssuesCsv}>
                         Export Issues CSV
                       </button>
@@ -1378,8 +1431,9 @@ function App() {
                       </tbody>
                     </table>
                   </div>
-                </>
-              )
+                  </>
+                )}
+              </div>
             )}
           </div>
 
@@ -1464,6 +1518,15 @@ function App() {
                 Configure rule
               </button>
             </div>
+            <div className="inspector-fill-card">
+              <div>
+                <span className="field-label">Fill detected values</span>
+                <p>{selectedColumnIssueCount ? `${selectedColumnIssueCount.toLocaleString()} empty or invalid cell${selectedColumnIssueCount === 1 ? "" : "s"} found in this column.` : "Run a scan to find values that can be filled."}</p>
+              </div>
+              <button type="button" className="secondary-button" onClick={() => openFillDialog(selectedColumn)} disabled={!selectedColumnIssueCount}>
+                Choose filling method
+              </button>
+            </div>
             {["Number", "Integer"].includes(selectedRule?.type) && (
               <div className="numeric-conversion-card">
                 <div>
@@ -1511,14 +1574,90 @@ function App() {
           </section>
         </div>
       )}
-      {isWeightedFillOpen && (
-        <div className="rule-builder-backdrop" onMouseDown={() => setIsWeightedFillOpen(false)}>
-          <section className="find-replace-dialog" role="dialog" aria-modal="true" aria-labelledby="weighted-fill-title" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="rule-builder-heading"><div><span className="section-label">Category filling</span><h2 id="weighted-fill-title">Fill by distribution</h2><p>Empty and invalid values in {selectedColumn} will follow the proportions of valid existing categories.</p></div><button type="button" className="dialog-close" onClick={() => setIsWeightedFillOpen(false)}>Close</button></div>
-            <div className="find-preview weighted-fill-preview">
-              {!weightedFillPreview.valid ? <strong className="error-text">{weightedFillPreview.error}</strong> : <><strong>{weightedFillPreview.assignments.length.toLocaleString()} invalid or empty values will be filled</strong>{weightedFillPreview.allocations.map((item) => <div key={item.value}><code>{item.value}</code> {item.count.toLocaleString()} fill{item.count === 1 ? "" : "s"} ({item.percent.toFixed(1)}%)</div>)}</>}
+      {isFillDialogOpen && (
+        <div className="rule-builder-backdrop" onMouseDown={() => setIsFillDialogOpen(false)}>
+          <section className="fill-dialog" role="dialog" aria-modal="true" aria-labelledby="fill-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="rule-builder-heading">
+              <div>
+                <span className="section-label">Bulk cleaning</span>
+                <h2 id="fill-dialog-title">Fill invalid values</h2>
+                <p>Choose what to fill, review the preview, then apply it as one undoable change.</p>
+              </div>
+              <button type="button" className="dialog-close" onClick={() => setIsFillDialogOpen(false)}>Close</button>
             </div>
-            <div className="rule-builder-actions"><button type="button" className="secondary-button" onClick={() => setIsWeightedFillOpen(false)}>Cancel</button><button type="button" onClick={applyWeightedCategoryFill} disabled={!weightedFillPreview.valid || !weightedFillPreview.assignments.length}>Fill by distribution</button></div>
+
+            <div className="fill-dialog-body">
+              <label className="fill-field">
+                <span>Column</span>
+                <select value={fillDraft.column} onChange={(event) => changeFillColumn(event.target.value)}>
+                  {fillIssueColumns.length > 1 && <option value={ALL_ISSUE_COLUMNS}>All columns with issues</option>}
+                  {fillIssueColumns.map((column) => (
+                    <option key={column} value={column}>{column} ({issueCountByColumn[column].toLocaleString()})</option>
+                  ))}
+                </select>
+              </label>
+
+              <fieldset className="fill-choice-group">
+                <legend>Fill</legend>
+                <div className="fill-scope-options">
+                  {[
+                    ["both", "Empty and invalid"],
+                    ["empty", "Empty only"],
+                    ["invalid", "Invalid only"],
+                  ].map(([value, label]) => (
+                    <label key={value} className={fillDraft.scope === value ? "selected" : ""}>
+                      <input type="radio" name="fill-scope" value={value} checked={fillDraft.scope === value} onChange={() => setFillDraft((draft) => ({ ...draft, scope: value }))} />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
+              <fieldset className="fill-choice-group">
+                <legend>Method{fillColumnRule ? ` for ${fillColumnRule.type}` : ""}</legend>
+                <div className="fill-method-options">
+                  {fillMethods.map((method) => (
+                    <label key={method.id} className={fillDraft.method === method.id ? "selected" : ""}>
+                      <input type="radio" name="fill-method" value={method.id} checked={fillDraft.method === method.id} onChange={() => setFillDraft((draft) => ({ ...draft, method: method.id }))} />
+                      <span><strong>{method.label}</strong><small>{method.description}</small></span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
+              {fillDraft.method === "custom" && (
+                <label className="fill-field">
+                  <span>Replacement value</span>
+                  <input value={fillDraft.customValue} onChange={(event) => setFillDraft((draft) => ({ ...draft, customValue: event.target.value }))} placeholder="NaN or leave empty" />
+                </label>
+              )}
+              {customFillWarning && <div className="fill-warning">{customFillWarning}</div>}
+
+              <div className="fill-preview">
+                <span className="field-label">Preview</span>
+                {isFillPreviewPending ? (
+                  <strong>Updating preview...</strong>
+                ) : !fillPreview.valid ? (
+                  <strong className="error-text">{fillPreview.error}</strong>
+                ) : (
+                  <>
+                    <strong>{fillPreview.changeCount.toLocaleString()} cell{fillPreview.changeCount === 1 ? "" : "s"} will change</strong>
+                    {fillPreview.skippedCount > 0 && <span>{fillPreview.skippedCount.toLocaleString()} target cell{fillPreview.skippedCount === 1 ? "" : "s"} cannot be filled with this method.</span>}
+                    {fillPreview.allocations.map((item) => (
+                      <div key={String(item.value)}><code>{String(item.value)}</code> {item.count.toLocaleString()} fill{item.count === 1 ? "" : "s"} ({item.percent.toFixed(1)}%)</div>
+                    ))}
+                    {fillPreview.examples.map((item) => (
+                      <div key={`${item.row}-${item.column}`}><code>Row {item.row}: {item.column}</code> {isEmptyValue(item.before) ? "(empty)" : String(item.before)} -&gt; {isEmptyValue(item.after) ? "(empty)" : String(item.after)}</div>
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="rule-builder-actions">
+              <button type="button" className="secondary-button" onClick={() => setIsFillDialogOpen(false)}>Cancel</button>
+              <button type="button" onClick={applyFillPlan} disabled={isFillPreviewPending || !fillPreview.valid || !fillPreview.changeCount}>Apply fill</button>
+            </div>
           </section>
         </div>
       )}
@@ -1565,7 +1704,7 @@ function App() {
                 <div className="friendly-rule-card">
                   <div>
                     <span className="field-label">Allowed values</span>
-                    <p>Only these exact values will pass scanning and appear in the cell dropdown.</p>
+                    <p>Add values by typing or pasting them, by choosing existing values from this column, or by using both. Only added values will pass scanning and appear in the cell dropdown.</p>
                   </div>
                   <div className="allowed-value-entry">
                     <input
@@ -1670,6 +1809,25 @@ function App() {
                       )}
                     </select>
                   </label>
+                  <details className="regex-help">
+                    <summary>Need regex help?</summary>
+                    <p>Pick a template above to fill the pattern, or use these examples as a starting point.</p>
+                    <div className="regex-template-grid">
+                      {REGEX_CHEAT_SHEET.map((template) => (
+                        <article className="regex-template" key={template.id}>
+                          <div>
+                            <strong>{template.label}</strong>
+                            <p>{template.description}</p>
+                          </div>
+                          <code>{template.pattern}</code>
+                          <div className="template-examples">
+                            <span>Pass: {template.examples[0]?.valid}</span>
+                            <span>Fail: {template.examples[0]?.invalid}</span>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </details>
                   <label><span>Regex pattern</span><input value={ruleDraft.customPattern ?? ""} onChange={(event) => updateRuleDraft("customPattern", event.target.value)} placeholder="[A-Za-z0-9]+" /></label>
                   <label><span>Rule label</span><input value={ruleDraft.customPatternLabel ?? ""} onChange={(event) => updateRuleDraft("customPatternLabel", event.target.value)} placeholder="Work email" /></label>
                   <label>
@@ -1692,11 +1850,13 @@ function App() {
                 </details>
               )}
 
-              <div className="rule-live-test">
-                <span className="field-label">Live test</span>
-                <input value={ruleBuilderTestValue} onChange={(event) => setRuleBuilderTestValue(event.target.value)} placeholder="Paste a value to test" />
-                {ruleBuilderTestResult && <strong className={ruleBuilderTestResult.valid ? "pass-text" : "error-text"}>{ruleBuilderTestResult.valid ? "Passes this rule" : ruleBuilderTestResult.reason}</strong>}
-              </div>
+              {ruleDraft.type !== "Category" && (
+                <div className="rule-live-test">
+                  <span className="field-label">Live test</span>
+                  <input value={ruleBuilderTestValue} onChange={(event) => setRuleBuilderTestValue(event.target.value)} placeholder="Paste a value to test" />
+                  {ruleBuilderTestResult && <strong className={ruleBuilderTestResult.valid ? "pass-text" : "error-text"}>{ruleBuilderTestResult.valid ? "Passes this rule" : ruleBuilderTestResult.reason}</strong>}
+                </div>
+              )}
             </div>
 
             <div className="rule-builder-actions">
@@ -1741,6 +1901,15 @@ function ToolbarChip({ label, value, tone = "default" }) {
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  );
+}
+
+function HintCode({ children, hint }) {
+  return (
+    <span className="hint-code" tabIndex="0">
+      <code>{children}</code>
+      <span className="hint-tooltip" role="tooltip">{hint}</span>
+    </span>
   );
 }
 
@@ -1850,38 +2019,6 @@ function createFindMatcher(draft) {
   const flags = draft.caseSensitive ? "g" : "gi";
   const pattern = draft.mode === "contains" ? escaped : `^${escaped}$`;
   return { valid: true, replace: (value, replacement) => value.replace(new RegExp(pattern, flags), replacement) };
-}
-
-function getWeightedFillPreview(rows, column, rule) {
-  if (!column || rule?.type !== "Category") return { valid: false, error: "Select a Category column first.", allocations: [], assignments: [] };
-  const counts = new Map();
-  const order = new Map();
-  const missingRows = [];
-  rows.forEach((row, index) => {
-    const value = row[column];
-    if (isEmptyValue(value) || !validateValue(value, rule).valid) {
-      missingRows.push(row);
-      return;
-    }
-    const normalized = String(value).trim();
-    if (!order.has(normalized)) order.set(normalized, index);
-    counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
-  });
-  const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
-  if (!missingRows.length) return { valid: false, error: "There are no empty values in this column.", allocations: [], assignments: [] };
-  if (!total) return { valid: false, error: "Add at least one valid category value before filling.", allocations: [], assignments: [] };
-  const allocations = [...counts.entries()].map(([value, sourceCount]) => {
-    const raw = missingRows.length * sourceCount / total;
-    return { value, sourceCount, raw, count: Math.floor(raw), percent: sourceCount * 100 / total, order: order.get(value) };
-  });
-  let remainder = missingRows.length - allocations.reduce((sum, item) => sum + item.count, 0);
-  for (const item of [...allocations].sort((a, b) => b.raw - Math.floor(b.raw) - (a.raw - Math.floor(a.raw)) || b.sourceCount - a.sourceCount || a.order - b.order)) {
-    if (!remainder) break;
-    item.count += 1;
-    remainder -= 1;
-  }
-  const valuesToAssign = allocations.flatMap((item) => Array(item.count).fill(item.value));
-  return { valid: true, allocations, assignments: missingRows.map((row, index) => ({ rowId: row.__rowId, value: valuesToAssign[index] })) };
 }
 
 function normalizeDateEditorValue(value) {
