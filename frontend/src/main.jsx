@@ -1761,7 +1761,7 @@ function App() {
           <ToolCard title="Duplicates" description="Find repeated rows using the columns you choose" onClick={() => openCleaningTools("duplicates")} disabled={!columns.length} />
           <ToolCard title="Text Cleanup" description="Fix spacing and capitalization in bulk" onClick={() => openCleaningTools("textCleanup")} disabled={!columns.length} />
           <ToolCard title="Split / Combine" description="Create columns by separating or joining values" onClick={() => openCleaningTools("splitCombine")} disabled={!columns.length} />
-          <ToolCard title="Recipes (WIP use with care)" description="Save this workflow and reuse it on another CSV" onClick={() => setActiveCleaningTool("recipes")} />
+          <ToolCard title="Recipes (WIP use with care)" description="Stores actions made automatically, reuse it on another CSV" onClick={() => setActiveCleaningTool("recipes")} />
         </div>
       );
     }
