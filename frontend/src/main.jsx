@@ -3,6 +3,25 @@ import { createRoot } from "react-dom/client";
 import { AgGridReact } from "ag-grid-react";
 import Papa from "papaparse";
 import { ALL_ISSUE_COLUMNS, calculateColumnFill, calculateMultiColumnCustomFill, getFillMethodsForType } from "./fillMethods.js";
+import {
+  applySchemaTransformToRows,
+  buildDuplicatePlan,
+  buildTextCleanupPlan,
+  getCombinePreview,
+  getSchemaOperationColumns,
+  getSplitPreview,
+  validateSchemaOperation,
+} from "./cleaningOperations.js";
+import {
+  RECIPE_STORAGE_KEY,
+  createRecipe,
+  getRecipeStepLabel,
+  moveRecipeStep,
+  parseRecipeJson,
+  readRecipes,
+  serializeRecipe,
+  validateRecipe,
+} from "./recipeEngine.js";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-quartz.css";
 import "./styles.css";
@@ -47,8 +66,18 @@ const REGEX_STORAGE_KEY = "cleansheet.saved-regex-rules";
 const RELATIONSHIP_STORAGE_KEY = "cleansheet.column-relationships";
 const RELATIONSHIP_TOLERANCE = 0.01;
 const HISTORY_LIMIT = 25;
+const GRID_ROW_SELECTION = {
+  mode: "multiRow",
+  checkboxes: false,
+  headerCheckbox: false,
+  enableClickSelection: true,
+};
 const EMPTY_RELATIONSHIP_DRAFT = { id: "", name: "", targetColumn: "", formula: "", enabled: true };
 const EMPTY_FILL_DRAFT = { column: "", scope: "both", method: "custom", customValue: "" };
+const EMPTY_DUPLICATE_DRAFT = { columns: [], keep: "first", trimValues: false, ignoreCase: false };
+const EMPTY_TEXT_CLEANUP_DRAFT = { columns: [], trimEdges: true, collapseWhitespace: true, caseMode: "keep" };
+const EMPTY_SPLIT_DRAFT = { type: "splitColumn", sourceColumn: "", outputColumns: ["Part 1", "Part 2"], separatorMode: "whitespace", customSeparator: "", removeSources: false };
+const EMPTY_COMBINE_DRAFT = { type: "combineColumns", sourceColumns: [], outputColumn: "Combined", separatorMode: "space", customSeparator: "", skipEmpty: true, removeSources: false };
 const DEFAULT_REGEX_BUILDER = {
   allowed: "alphanumeric",
   customCharacters: "",
@@ -104,11 +133,29 @@ function App() {
   const [selectedRelationshipFixes, setSelectedRelationshipFixes] = useState([]);
   const [isRelationshipPanelOpen, setIsRelationshipPanelOpen] = useState(false);
   const [history, setHistory] = useState({ past: [], future: [] });
-  const [isFindReplaceOpen, setIsFindReplaceOpen] = useState(false);
   const [findReplaceDraft, setFindReplaceDraft] = useState({ find: "", replace: "", mode: "exact", caseSensitive: true });
   const [isFillDialogOpen, setIsFillDialogOpen] = useState(false);
   const [fillDraft, setFillDraft] = useState(EMPTY_FILL_DRAFT);
+  const [isCleaningToolsOpen, setIsCleaningToolsOpen] = useState(false);
+  const [activeCleaningTool, setActiveCleaningTool] = useState("home");
+  const [duplicateDraft, setDuplicateDraft] = useState(EMPTY_DUPLICATE_DRAFT);
+  const [textCleanupDraft, setTextCleanupDraft] = useState(EMPTY_TEXT_CLEANUP_DRAFT);
+  const [splitDraft, setSplitDraft] = useState(EMPTY_SPLIT_DRAFT);
+  const [combineDraft, setCombineDraft] = useState(EMPTY_COMBINE_DRAFT);
+  const [columnOperationMode, setColumnOperationMode] = useState("split");
+  const [showIssueRowsOnly, setShowIssueRowsOnly] = useState(false);
+  const [capturedRecipeSteps, setCapturedRecipeSteps] = useState([]);
+  const [savedRecipes, setSavedRecipes] = useState(() => readRecipes(window.localStorage));
+  const [recipeName, setRecipeName] = useState("");
+  const [recipeMessage, setRecipeMessage] = useState("");
+  const [recipePreview, setRecipePreview] = useState(null);
+  const [renamingRecipeId, setRenamingRecipeId] = useState("");
+  const [renamingRecipeName, setRenamingRecipeName] = useState("");
   const deferredFillDraft = useDeferredValue(fillDraft);
+  const deferredDuplicateDraft = useDeferredValue(duplicateDraft);
+  const deferredTextCleanupDraft = useDeferredValue(textCleanupDraft);
+  const deferredSplitDraft = useDeferredValue(splitDraft);
+  const deferredCombineDraft = useDeferredValue(combineDraft);
 
   useEffect(() => {
     window.localStorage.setItem(REGEX_STORAGE_KEY, JSON.stringify(savedRegexRules));
@@ -119,15 +166,24 @@ function App() {
   }, [relationshipRules]);
 
   useEffect(() => {
-    if (!pendingConfirmation && !isRuleBuilderOpen && !isFillDialogOpen) return undefined;
+    try {
+      window.localStorage.setItem(RECIPE_STORAGE_KEY, JSON.stringify(savedRecipes));
+    } catch {
+      setRecipeMessage("Recipes could not be saved in this browser. Export them as JSON instead.");
+    }
+  }, [savedRecipes]);
+
+  useEffect(() => {
+    if (!pendingConfirmation && !isRuleBuilderOpen && !isFillDialogOpen && !isCleaningToolsOpen) return undefined;
     const handleKeyDown = (event) => {
       if (event.key === "Escape") setPendingConfirmation(null);
       if (event.key === "Escape") setIsRuleBuilderOpen(false);
       if (event.key === "Escape") setIsFillDialogOpen(false);
+      if (event.key === "Escape") setIsCleaningToolsOpen(false);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isFillDialogOpen, isRuleBuilderOpen, pendingConfirmation]);
+  }, [isCleaningToolsOpen, isFillDialogOpen, isRuleBuilderOpen, pendingConfirmation]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -138,6 +194,14 @@ function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [history]);
+
+  useEffect(() => {
+    if (hasUnscannedChanges) setShowIssueRowsOnly(false);
+  }, [hasUnscannedChanges]);
+
+  useEffect(() => {
+    if (!isCleaningToolsOpen) setRecipePreview(null);
+  }, [isCleaningToolsOpen]);
 
   const relationshipRuleStates = useMemo(
     () => relationshipRules.map((rule) => ({ ...rule, validation: validateRelationshipRule(rule, columns) })),
@@ -205,8 +269,32 @@ function App() {
     ? validateValue(ruleBuilderTestValue, ruleDraft)
     : null;
   const findReplacePreview = useMemo(
-    () => isFindReplaceOpen ? getFindReplacePreview() : { valid: true, count: 0, examples: [] },
-    [findReplaceDraft, isFindReplaceOpen, rows, visibleColumns],
+    () => isCleaningToolsOpen && activeCleaningTool === "findReplace" ? getFindReplacePreview() : { valid: true, count: 0, examples: [] },
+    [activeCleaningTool, findReplaceDraft, isCleaningToolsOpen, rows, visibleColumns],
+  );
+  const duplicatePreview = useMemo(
+    () => isCleaningToolsOpen && activeCleaningTool === "duplicates"
+      ? buildDuplicatePlan(rows, deferredDuplicateDraft, false)
+      : { valid: true, groupCount: 0, duplicateRowCount: 0, deleteCount: 0, examples: [] },
+    [activeCleaningTool, deferredDuplicateDraft, isCleaningToolsOpen, rows],
+  );
+  const textCleanupPreview = useMemo(
+    () => isCleaningToolsOpen && activeCleaningTool === "textCleanup"
+      ? buildTextCleanupPlan(rows, deferredTextCleanupDraft, false)
+      : { valid: true, changeCount: 0, examples: [] },
+    [activeCleaningTool, deferredTextCleanupDraft, isCleaningToolsOpen, rows],
+  );
+  const splitPreview = useMemo(
+    () => isCleaningToolsOpen && activeCleaningTool === "splitCombine"
+      ? getSplitPreview(rows, deferredSplitDraft)
+      : { valid: true, changedRowCount: 0, examples: [] },
+    [activeCleaningTool, deferredSplitDraft, isCleaningToolsOpen, rows],
+  );
+  const combinePreview = useMemo(
+    () => isCleaningToolsOpen && activeCleaningTool === "splitCombine"
+      ? getCombinePreview(rows, deferredCombineDraft)
+      : { valid: true, changedRowCount: 0, examples: [] },
+    [activeCleaningTool, deferredCombineDraft, isCleaningToolsOpen, rows],
   );
   const fillColumnRule = fillDraft.column && fillDraft.column !== ALL_ISSUE_COLUMNS
     ? resolveColumnRule(columnRules[fillDraft.column] ?? createColumnRule("Text"), regexRuleLibrary)
@@ -262,6 +350,16 @@ function App() {
   const validationIssueRowCount = useMemo(
     () => new Set(validationIssues.map((issue) => issue.row)).size,
     [validationIssues],
+  );
+  const validationIssueRowIds = useMemo(
+    () => new Set(validationIssues.map((issue) => issue.rowId).filter(Boolean)),
+    [validationIssues],
+  );
+  const gridRows = useMemo(
+    () => showIssueRowsOnly && validationIssueRowIds.size
+      ? visibleRows.filter((row) => validationIssueRowIds.has(row.__rowId))
+      : visibleRows,
+    [showIssueRowsOnly, validationIssueRowIds, visibleRows],
   );
 
   const gridColumns = useMemo(
@@ -325,6 +423,9 @@ function App() {
     setRelationshipIssues([]);
     setSelectedRelationshipFixes([]);
     setHistory({ past: [], future: [] });
+    setCapturedRecipeSteps([]);
+    setShowIssueRowsOnly(false);
+    setRecipePreview(null);
   }
 
   async function loadSample() {
@@ -362,7 +463,13 @@ function App() {
   }
 
   function pushHistory(action) {
-    setHistory((current) => ({ past: [...current.past, action].slice(-HISTORY_LIMIT), future: [] }));
+    const nextAction = action.recipeStep
+      ? { ...action, captureId: action.captureId ?? crypto.randomUUID() }
+      : action;
+    if (nextAction.recipeStep) {
+      setCapturedRecipeSteps((currentSteps) => [...currentSteps, { ...nextAction.recipeStep, captureId: nextAction.captureId }]);
+    }
+    setHistory((current) => ({ past: [...current.past, nextAction].slice(-HISTORY_LIMIT), future: [] }));
   }
 
   function applyCellChanges(currentRows, changes, direction) {
@@ -384,9 +491,8 @@ function App() {
   function undo() {
     const action = history.past.at(-1);
     if (!action) return;
-    setRows((currentRows) => action.kind === "deleteRows"
-      ? restoreDeletedRows(currentRows, action.rows)
-      : applyCellChanges(currentRows, action.changes, "undo"));
+    applyHistoryAction(action, "undo");
+    if (action.captureId) setCapturedRecipeSteps((steps) => steps.filter((step) => step.captureId !== action.captureId));
     setHistory((current) => ({ past: current.past.slice(0, -1), future: [...current.future, action] }));
     clearDerivedResults();
   }
@@ -394,11 +500,47 @@ function App() {
   function redo() {
     const action = history.future.at(-1);
     if (!action) return;
-    setRows((currentRows) => action.kind === "deleteRows"
-      ? currentRows.filter((row) => !action.rows.some((item) => item.row.__rowId === row.__rowId))
-      : applyCellChanges(currentRows, action.changes, "redo"));
+    applyHistoryAction(action, "redo");
+    if (action.captureId && action.recipeStep) {
+      setCapturedRecipeSteps((steps) => [...steps, { ...action.recipeStep, captureId: action.captureId }]);
+    }
     setHistory((current) => ({ past: [...current.past, action].slice(-HISTORY_LIMIT), future: current.future.slice(0, -1) }));
     clearDerivedResults();
+  }
+
+  function applyHistoryAction(action, direction) {
+    if (action.kind === "compound") {
+      const children = direction === "undo" ? [...action.actions].reverse() : action.actions;
+      for (const child of children) applyHistoryAction(child, direction);
+      return;
+    }
+    if (action.kind === "cells") {
+      setRows((currentRows) => applyCellChanges(currentRows, action.changes, direction));
+      return;
+    }
+    if (action.kind === "deleteRows") {
+      const deletedIds = new Set(action.rows.map((item) => item.row.__rowId));
+      setRows((currentRows) => direction === "undo"
+        ? restoreDeletedRows(currentRows, action.rows)
+        : currentRows.filter((row) => !deletedIds.has(row.__rowId)));
+      return;
+    }
+    if (action.kind === "schema") {
+      setRows((currentRows) => direction === "undo"
+        ? undoSchemaTransformRows(currentRows, action)
+        : applySchemaTransformToRows(currentRows, action.operation));
+      const metadata = direction === "undo" ? action.before : action.after;
+      setColumns(metadata.columns);
+      setVisibleColumns(metadata.visibleColumns);
+      setColumnRules(metadata.columnRules);
+      setSelectedColumn(metadata.selectedColumn);
+      return;
+    }
+    if (action.kind === "config") {
+      const config = direction === "undo" ? action.before : action.after;
+      setColumnRules(config.columnRules);
+      setRelationshipRules(config.relationshipRules);
+    }
   }
 
   function clearDerivedResults() {
@@ -406,6 +548,7 @@ function App() {
     setRelationshipIssues([]);
     setSelectedRelationshipFixes([]);
     setCurrentIssueIndex(-1);
+    setShowIssueRowsOnly(false);
     setHasUnscannedChanges(true);
   }
 
@@ -449,11 +592,468 @@ function App() {
           return nextRow;
         });
         setRows(nextRows);
-        pushHistory({ label: "Find & Replace", kind: "cells", changes });
+        pushHistory({
+          label: "Find & Replace",
+          kind: "cells",
+          changes,
+          recipeStep: { type: "findReplace", columns: [...visibleColumns], ...findReplaceDraft },
+        });
         clearDerivedResults();
-        setIsFindReplaceOpen(false);
+        setIsCleaningToolsOpen(false);
       },
     });
+  }
+
+  function openCleaningTools(tool = "home") {
+    if (tool === "duplicates") {
+      setDuplicateDraft((draft) => ({ ...draft, columns: draft.columns.filter((column) => columns.includes(column)).length ? draft.columns.filter((column) => columns.includes(column)) : [...visibleColumns] }));
+    }
+    if (tool === "textCleanup") {
+      setTextCleanupDraft((draft) => ({ ...draft, columns: draft.columns.filter((column) => columns.includes(column)).length ? draft.columns.filter((column) => columns.includes(column)) : selectedColumn ? [selectedColumn] : [...visibleColumns] }));
+    }
+    if (tool === "splitCombine") {
+      const source = columns.includes(splitDraft.sourceColumn) ? splitDraft.sourceColumn : selectedColumn || columns[0] || "";
+      setSplitDraft((draft) => ({
+        ...draft,
+        sourceColumn: source,
+        outputColumns: draft.sourceColumn === source ? draft.outputColumns : [`${source || "Part"} 1`, `${source || "Part"} 2`],
+      }));
+      setCombineDraft((draft) => ({
+        ...draft,
+        sourceColumns: draft.sourceColumns.filter((column) => columns.includes(column)).length >= 2
+          ? draft.sourceColumns.filter((column) => columns.includes(column))
+          : visibleColumns.slice(0, 2),
+      }));
+    }
+    setRecipeMessage("");
+    setRecipePreview(null);
+    setActiveCleaningTool(tool);
+    setIsCleaningToolsOpen(true);
+  }
+
+  function toggleToolColumn(setter, key, column) {
+    setter((draft) => {
+      const current = draft[key] ?? [];
+      return { ...draft, [key]: current.includes(column) ? current.filter((item) => item !== column) : [...current, column] };
+    });
+  }
+
+  function applyDuplicateRemoval() {
+    const plan = buildDuplicatePlan(rows, duplicateDraft, true);
+    if (!plan.valid || !plan.deleteCount) return;
+    requestConfirmation({
+      title: "Remove duplicate rows?",
+      message: `Remove ${plan.deleteCount.toLocaleString()} row${plan.deleteCount === 1 ? "" : "s"} from ${plan.groupCount.toLocaleString()} duplicate group${plan.groupCount === 1 ? "" : "s"}?`,
+      confirmLabel: "Remove duplicates",
+      tone: "danger",
+      onConfirm: () => {
+        const deletedIds = new Set(plan.deletedRows.map((item) => item.row.__rowId));
+        setRows((currentRows) => currentRows.filter((row) => !deletedIds.has(row.__rowId)));
+        pushHistory({
+          label: "Remove duplicates",
+          kind: "deleteRows",
+          rows: plan.deletedRows,
+          recipeStep: { type: "deduplicate", ...duplicateDraft, columns: [...duplicateDraft.columns] },
+        });
+        clearDerivedResults();
+        setIsCleaningToolsOpen(false);
+      },
+    });
+  }
+
+  function applyTextCleanup() {
+    const plan = buildTextCleanupPlan(rows, textCleanupDraft, true);
+    if (!plan.valid || !plan.changeCount) return;
+    requestConfirmation({
+      title: "Clean selected text?",
+      message: `Update ${plan.changeCount.toLocaleString()} cell${plan.changeCount === 1 ? "" : "s"} across ${textCleanupDraft.columns.length.toLocaleString()} column${textCleanupDraft.columns.length === 1 ? "" : "s"}?`,
+      confirmLabel: "Apply cleanup",
+      tone: "default",
+      onConfirm: () => {
+        setRows((currentRows) => applyCellChanges(currentRows, plan.changes, "redo"));
+        pushHistory({
+          label: "Clean text",
+          kind: "cells",
+          changes: plan.changes,
+          recipeStep: { type: "textCleanup", ...textCleanupDraft, columns: [...textCleanupDraft.columns] },
+        });
+        clearDerivedResults();
+        setIsCleaningToolsOpen(false);
+      },
+    });
+  }
+
+  function applySplitColumns() {
+    applySchemaOperation(splitDraft, "Split column", {
+      type: "splitColumn",
+      ...splitDraft,
+      outputColumns: splitDraft.outputColumns.map((column) => column.trim()),
+    });
+  }
+
+  function applyCombinedColumns() {
+    applySchemaOperation(combineDraft, "Combine columns", {
+      type: "combineColumns",
+      ...combineDraft,
+      outputColumn: combineDraft.outputColumn.trim(),
+      sourceColumns: [...combineDraft.sourceColumns],
+    });
+  }
+
+  function applySchemaOperation(draft, label, recipeStep) {
+    const operation = recipeStep;
+    const validation = validateSchemaOperation(columns, operation);
+    if (!validation.valid) return;
+    const { nextColumns, nextVisibleColumns, addedColumns, removedColumns } = getSchemaOperationColumns(columns, visibleColumns, operation);
+    requestConfirmation({
+      title: `${label}?`,
+      message: `${label} across ${rows.length.toLocaleString()} row${rows.length === 1 ? "" : "s"}${operation.removeSources ? " and remove the source columns" : ""}?`,
+      confirmLabel: label,
+      tone: "default",
+      onConfirm: () => {
+        const nextRules = { ...columnRules };
+        for (const column of removedColumns) delete nextRules[column];
+        for (const column of addedColumns) nextRules[column] = createColumnRule("Text");
+        const nextSelectedColumn = addedColumns[0] ?? nextColumns[0] ?? "";
+        const action = createSchemaHistoryAction({
+          label,
+          operation,
+          rows,
+          addedColumns,
+          removedColumns,
+          before: { columns, visibleColumns, columnRules, selectedColumn },
+          after: { columns: nextColumns, visibleColumns: nextVisibleColumns, columnRules: nextRules, selectedColumn: nextSelectedColumn },
+          recipeStep,
+        });
+        setRows((currentRows) => applySchemaTransformToRows(currentRows, operation));
+        setColumns(nextColumns);
+        setVisibleColumns(nextVisibleColumns);
+        setColumnRules(nextRules);
+        setSelectedColumn(nextSelectedColumn);
+        pushHistory(action);
+        clearDerivedResults();
+        setIsCleaningToolsOpen(false);
+      },
+    });
+  }
+
+  function saveCurrentRecipe() {
+    if (!recipeName.trim()) {
+      setRecipeMessage("Give the recipe a name first.");
+      return;
+    }
+    const resolvedRules = Object.fromEntries(columns.map((column) => {
+      const rule = resolveColumnRule(columnRules[column] ?? createColumnRule("Text"), regexRuleLibrary);
+      return [column, { ...rule, savedRegexId: "" }];
+    }));
+    for (const step of capturedRecipeSteps) {
+      for (const [column, rule] of Object.entries(step.rules ?? {})) {
+        if (!resolvedRules[column]) resolvedRules[column] = cloneSerializable(rule);
+      }
+    }
+    const regexRules = Object.values(resolvedRules)
+      .filter((rule) => isCustomRegexMode(rule) && rule.customPattern)
+      .map((rule) => ({ label: rule.customPatternLabel || "Custom regex", pattern: rule.customPattern, matchMode: rule.matchMode ?? "full" }));
+    const steps = capturedRecipeSteps.map(({ captureId, ...step }) => step);
+    try {
+      const recipe = createRecipe({
+        name: recipeName,
+        columns,
+        columnRules: resolvedRules,
+        regexRules,
+        relationships: relationshipRules,
+        steps,
+      });
+      setSavedRecipes((recipes) => [...recipes, recipe]);
+      setCapturedRecipeSteps([]);
+      setRecipeName("");
+      setRecipeMessage(`Saved "${recipe.name}".`);
+    } catch (error) {
+      setRecipeMessage(error instanceof Error ? error.message : "Recipe could not be saved.");
+    }
+  }
+
+  function removeCapturedRecipeStep(captureId) {
+    setCapturedRecipeSteps((steps) => steps.filter((step) => step.captureId !== captureId));
+  }
+
+  function reorderCapturedRecipeStep(index, direction) {
+    setCapturedRecipeSteps((steps) => moveRecipeStep(steps, index, direction));
+  }
+
+  function previewRecipe(recipe) {
+    setRecipeMessage("");
+    const validation = validateRecipe(recipe);
+    if (!validation.valid) {
+      setRecipePreview({ recipe, valid: false, error: validation.error });
+      return;
+    }
+    if (!rows.length) {
+      setRecipePreview({ recipe, valid: false, error: "Load a CSV before running this recipe." });
+      return;
+    }
+    setRecipePreview({ recipe, ...buildRecipeApplication(recipe) });
+  }
+
+  function applyPreviewedRecipe() {
+    if (!recipePreview?.valid) return;
+    requestConfirmation({
+      title: `Apply ${recipePreview.recipe.name}?`,
+      message: `Run ${recipePreview.recipe.steps.length.toLocaleString()} recipe step${recipePreview.recipe.steps.length === 1 ? "" : "s"} in order? The complete recipe can be undone as one change.`,
+      confirmLabel: "Apply recipe",
+      tone: "default",
+      onConfirm: () => {
+        const result = recipePreview;
+        setRows(result.state.rows);
+        setColumns(result.state.columns);
+        setVisibleColumns(result.state.visibleColumns);
+        setColumnRules(result.state.columnRules);
+        setRelationshipRules(result.state.relationshipRules);
+        setSelectedColumn(result.state.selectedColumn);
+        pushHistory(result.historyAction);
+        clearDerivedResults();
+        setRecipePreview(null);
+        setIsCleaningToolsOpen(false);
+      },
+    });
+  }
+
+  function buildRecipeApplication(recipe) {
+    let workingRows = rows;
+    let workingColumns = [...columns];
+    let workingVisible = [...visibleColumns];
+    let workingRules = { ...columnRules };
+    let workingRelationships = mergeRelationshipRules(relationshipRules, recipe.relationships);
+    let workingSelected = selectedColumn;
+    const actions = [];
+    const summary = [];
+    const recipeRelationshipById = new Map(recipe.relationships.map((rule) => [rule.id, rule]));
+
+    for (const [column, rule] of Object.entries(recipe.columnRules)) {
+      if (workingColumns.includes(column)) workingRules[column] = cloneSerializable(rule);
+    }
+    actions.push({
+      kind: "config",
+      before: { columnRules, relationshipRules },
+      after: { columnRules: workingRules, relationshipRules: workingRelationships },
+    });
+
+    for (const step of recipe.steps) {
+      const stepColumns = getRecipeStepColumns(step);
+      const missingColumn = stepColumns.find((column) => !workingColumns.includes(column));
+      if (missingColumn) return { valid: false, error: `${getRecipeStepLabel(step)} needs missing column "${missingColumn}".` };
+
+      if (step.type === "findReplace") {
+        const matcher = createFindMatcher(step);
+        if (!matcher.valid) return { valid: false, error: `Find & Replace: ${matcher.error}` };
+        const changes = [];
+        for (const row of workingRows) {
+          for (const column of step.columns) {
+            const before = String(row[column] ?? "");
+            const after = matcher.replace(before, step.replace);
+            if (after !== before) changes.push({ rowId: row.__rowId, column, before: row[column], after });
+          }
+        }
+        if (changes.length) {
+          workingRows = applyCellChanges(workingRows, changes, "redo");
+          actions.push({ kind: "cells", changes });
+        }
+        summary.push({ label: "Find & Replace", count: changes.length, unit: "cells" });
+        continue;
+      }
+
+      if (step.type === "textCleanup") {
+        const plan = buildTextCleanupPlan(workingRows, step, true);
+        if (!plan.valid) return { valid: false, error: `Text Cleanup: ${plan.error}` };
+        if (plan.changes.length) {
+          workingRows = applyCellChanges(workingRows, plan.changes, "redo");
+          actions.push({ kind: "cells", changes: plan.changes });
+        }
+        summary.push({ label: "Text Cleanup", count: plan.changeCount, unit: "cells" });
+        continue;
+      }
+
+      if (step.type === "deduplicate") {
+        const plan = buildDuplicatePlan(workingRows, step, true);
+        if (!plan.valid) return { valid: false, error: `Duplicates: ${plan.error}` };
+        if (plan.deletedRows.length) {
+          const deletedIds = new Set(plan.deletedRows.map((item) => item.row.__rowId));
+          workingRows = workingRows.filter((row) => !deletedIds.has(row.__rowId));
+          actions.push({ kind: "deleteRows", rows: plan.deletedRows });
+        }
+        summary.push({ label: "Duplicates", count: plan.deleteCount, unit: "rows" });
+        continue;
+      }
+
+      if (step.type === "fill") {
+        let stepChangeCount = 0;
+        for (const column of step.columns) {
+          const rule = resolveColumnRule(workingRules[column] ?? createColumnRule("Text"), regexRuleLibrary);
+          const plan = calculateColumnFill(workingRows, {
+            ...step,
+            column,
+            type: rule.type,
+            isValid: (value) => validateValue(value, rule).valid,
+          }, true);
+          if (!plan.valid) return { valid: false, error: `Fill ${column}: ${plan.error}` };
+          if (plan.changes.length) {
+            workingRows = applyCellChanges(workingRows, plan.changes, "redo");
+            actions.push({ kind: "cells", changes: plan.changes });
+            stepChangeCount += plan.changes.length;
+          }
+        }
+        summary.push({ label: "Fill invalid values", count: stepChangeCount, unit: "cells" });
+        continue;
+      }
+
+      if (step.type === "numericConversion") {
+        const plan = buildNumericConversionChanges(workingRows, step.column, step.targetType);
+        const rulesBeforeConversion = workingRules;
+        if (plan.changes.length) {
+          workingRows = applyCellChanges(workingRows, plan.changes, "redo");
+          actions.push({ kind: "cells", changes: plan.changes });
+        }
+        workingRules = { ...workingRules, [step.column]: createColumnRule(step.targetType) };
+        actions.push({
+          kind: "config",
+          before: { columnRules: rulesBeforeConversion, relationshipRules: workingRelationships },
+          after: { columnRules: workingRules, relationshipRules: workingRelationships },
+        });
+        summary.push({ label: "Numeric conversion", count: plan.changes.length, unit: "cells" });
+        continue;
+      }
+
+      if (step.type === "relationshipFix") {
+        const fixes = [];
+        for (const relationshipId of step.relationshipIds ?? []) {
+          const rule = recipeRelationshipById.get(relationshipId);
+          if (!rule) return { valid: false, error: `Relationship "${relationshipId}" is missing from the recipe.` };
+          const validation = validateRelationshipRule(rule, workingColumns);
+          if (!validation.valid) return { valid: false, error: `${rule.name}: ${validation.error}` };
+          fixes.push(...checkRelationshipRows(workingRows, rule, validation.ast, workingRules).filter((issue) => issue.fixable));
+        }
+        const uniqueFixes = new Map(fixes.map((issue) => [`${issue.rowId}:${issue.targetColumn}`, issue]));
+        const rowsById = new Map(workingRows.map((row) => [row.__rowId, row]));
+        const changes = [...uniqueFixes.values()].map((issue) => {
+          const row = rowsById.get(issue.rowId);
+          return { rowId: issue.rowId, column: issue.targetColumn, before: row?.[issue.targetColumn] ?? "", after: issue.suggestedValue };
+        });
+        if (changes.length) {
+          workingRows = applyCellChanges(workingRows, changes, "redo");
+          actions.push({ kind: "cells", changes });
+        }
+        summary.push({ label: "Relationship fixes", count: changes.length, unit: "cells" });
+        continue;
+      }
+
+      if (step.type === "deleteInvalidRows") {
+        const rules = Object.fromEntries(step.columns.map((column) => [column, resolveColumnRule(workingRules[column] ?? createColumnRule("Text"), regexRuleLibrary)]));
+        const issues = validateRows(workingRows.map((row) => pickColumns(row, step.columns)), rules);
+        const issueIds = new Set(issues.map((issue) => issue.rowId));
+        const deletedRows = workingRows.map((row, index) => ({ row, index })).filter(({ row }) => issueIds.has(row.__rowId));
+        if (deletedRows.length) {
+          workingRows = workingRows.filter((row) => !issueIds.has(row.__rowId));
+          actions.push({ kind: "deleteRows", rows: deletedRows });
+        }
+        summary.push({ label: "Delete invalid rows", count: deletedRows.length, unit: "rows" });
+        continue;
+      }
+
+      if (step.type === "splitColumn" || step.type === "combineColumns") {
+        const validation = validateSchemaOperation(workingColumns, step);
+        if (!validation.valid) return { valid: false, error: `${getRecipeStepLabel(step)}: ${validation.error}` };
+        const metadata = getSchemaOperationColumns(workingColumns, workingVisible, step);
+        const nextRules = { ...workingRules };
+        for (const column of metadata.removedColumns) delete nextRules[column];
+        for (const column of metadata.addedColumns) nextRules[column] = cloneSerializable(recipe.columnRules[column] ?? createColumnRule("Text"));
+        const nextSelected = metadata.addedColumns[0] ?? workingSelected;
+        const schemaAction = createSchemaHistoryAction({
+          label: getRecipeStepLabel(step),
+          operation: step,
+          rows: workingRows,
+          addedColumns: metadata.addedColumns,
+          removedColumns: metadata.removedColumns,
+          before: { columns: workingColumns, visibleColumns: workingVisible, columnRules: workingRules, selectedColumn: workingSelected },
+          after: { columns: metadata.nextColumns, visibleColumns: metadata.nextVisibleColumns, columnRules: nextRules, selectedColumn: nextSelected },
+        });
+        workingRows = applySchemaTransformToRows(workingRows, step);
+        workingColumns = metadata.nextColumns;
+        workingVisible = metadata.nextVisibleColumns;
+        workingRules = nextRules;
+        workingSelected = nextSelected;
+        actions.push(schemaAction);
+        summary.push({ label: getRecipeStepLabel(step), count: workingRows.length, unit: "rows" });
+      }
+    }
+
+    return {
+      valid: true,
+      summary,
+      state: {
+        rows: workingRows,
+        columns: workingColumns,
+        visibleColumns: workingVisible,
+        columnRules: workingRules,
+        relationshipRules: workingRelationships,
+        selectedColumn: workingSelected && workingColumns.includes(workingSelected) ? workingSelected : workingColumns[0] ?? "",
+      },
+      historyAction: { label: `Apply recipe: ${recipe.name}`, kind: "compound", actions },
+    };
+  }
+
+  async function importRecipe(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const parsed = parseRecipeJson(await file.text(), savedRecipes);
+    if (!parsed.valid) {
+      setRecipeMessage(parsed.error);
+      return;
+    }
+    setSavedRecipes((recipes) => [...recipes, parsed.recipe]);
+    setRecipeMessage(`Imported "${parsed.recipe.name}".`);
+  }
+
+  function exportRecipe(recipe) {
+    downloadText(serializeRecipe(recipe), `${toFileName(recipe.name)}.json`, "application/json;charset=utf-8");
+  }
+
+  function duplicateRecipe(recipe) {
+    const copy = { ...cloneSerializable(recipe), id: crypto.randomUUID(), name: `${recipe.name} copy`, createdAt: new Date().toISOString() };
+    setSavedRecipes((recipes) => [...recipes, copy]);
+  }
+
+  function deleteRecipe(recipe) {
+    requestConfirmation({
+      title: `Delete ${recipe.name}?`,
+      message: "Delete this saved recipe from this browser? Export it first if you may need it later.",
+      confirmLabel: "Delete recipe",
+      tone: "danger",
+      onConfirm: () => {
+        setSavedRecipes((recipes) => recipes.filter((item) => item.id !== recipe.id));
+        if (recipePreview?.recipe.id === recipe.id) setRecipePreview(null);
+      },
+    });
+  }
+
+  function beginRenameRecipe(recipe) {
+    setRenamingRecipeId(recipe.id);
+    setRenamingRecipeName(recipe.name);
+  }
+
+  function saveRecipeName(recipeId) {
+    const name = renamingRecipeName.trim();
+    if (!name) return;
+    setSavedRecipes((recipes) => recipes.map((recipe) => recipe.id === recipeId ? { ...recipe, name } : recipe));
+    setRenamingRecipeId("");
+    setRenamingRecipeName("");
+  }
+
+  function snapshotColumnRules(columnNames, sourceRules = columnRules) {
+    return Object.fromEntries(columnNames.filter(Boolean).map((column) => {
+      const rule = resolveColumnRule(sourceRules[column] ?? createColumnRule("Text"), regexRuleLibrary);
+      return [column, { ...rule, savedRegexId: "" }];
+    }));
   }
 
   function handleVisibleColumnToggle(column) {
@@ -873,9 +1473,13 @@ function App() {
   }
 
   function applySelectedRelationshipFixes() {
+    const selectedIssues = relationshipIssues.filter((issue) => issue.fixable && selectedRelationshipFixes.includes(issue.id));
+    const selectedRuleIds = [...new Set(selectedIssues.map((issue) => issue.ruleId))];
+    const selectedRuleColumns = relationshipRuleStates
+      .filter((rule) => selectedRuleIds.includes(rule.id))
+      .flatMap((rule) => [rule.targetColumn, ...(rule.validation.references ?? [])]);
     const fixesByRowId = new Map(
-      relationshipIssues
-        .filter((issue) => issue.fixable && selectedRelationshipFixes.includes(issue.id))
+      selectedIssues
         .map((issue) => [`${issue.rowId}:${issue.targetColumn}`, issue]),
     );
     if (!fixesByRowId.size) return;
@@ -892,7 +1496,12 @@ function App() {
       return nextRow;
     });
     setRows(nextRows);
-    if (changes.length) pushHistory({ label: "Apply relationship fixes", kind: "cells", changes });
+    if (changes.length) pushHistory({
+      label: "Apply relationship fixes",
+      kind: "cells",
+      changes,
+      recipeStep: { type: "relationshipFix", relationshipIds: selectedRuleIds, rules: snapshotColumnRules([...new Set(selectedRuleColumns)]) },
+    });
     setRelationshipIssues((currentIssues) => currentIssues.filter((issue) => !selectedRelationshipFixes.includes(issue.id)));
     setSelectedRelationshipFixes([]);
     setHasUnscannedChanges(true);
@@ -905,13 +1514,14 @@ function App() {
     setHasUnscannedChanges(false);
     setIsValidationPanelOpen(false);
     setCurrentIssueIndex(-1);
+    if (!nextIssues.length) setShowIssueRowsOnly(false);
   }
 
   function deleteRowsWithValidationIssues() {
     if (!validationIssueRowCount) return;
     requestConfirmation({
       title: "Delete rows with issues?",
-      message: `Delete ${validationIssueRowCount.toLocaleString()} row${validationIssueRowCount === 1 ? "" : "s"} with validation issues? This cannot be undone in CleanSheet.`,
+      message: `Delete ${validationIssueRowCount.toLocaleString()} row${validationIssueRowCount === 1 ? "" : "s"} with validation issues? You can undo this change.`,
       confirmLabel: "Delete rows",
       tone: "danger",
       onConfirm: performDeleteRowsWithValidationIssues,
@@ -923,13 +1533,20 @@ function App() {
     const deletedRows = rows
       .map((row, index) => ({ row, index }))
       .filter(({ row, index }) => issueRowIds.size ? issueRowIds.has(row.__rowId) : validationIssues.some((issue) => issue.row - 1 === index));
-    setRows(rows.filter((row) => !deletedRows.some((item) => item.row.__rowId === row.__rowId)));
-    if (deletedRows.length) pushHistory({ label: "Delete rows with issues", kind: "deleteRows", rows: deletedRows });
+    const deletedIds = new Set(deletedRows.map((item) => item.row.__rowId));
+    setRows(rows.filter((row) => !deletedIds.has(row.__rowId)));
+    if (deletedRows.length) pushHistory({
+      label: "Delete rows with issues",
+      kind: "deleteRows",
+      rows: deletedRows,
+      recipeStep: { type: "deleteInvalidRows", columns: [...visibleColumns], rules: snapshotColumnRules(visibleColumns) },
+    });
     setValidationIssues([]);
     setRelationshipIssues([]);
     setSelectedRelationshipFixes([]);
     setCurrentIssueIndex(-1);
     setIsValidationPanelOpen(false);
+    setShowIssueRowsOnly(false);
     setHasUnscannedChanges(true);
   }
 
@@ -969,7 +1586,19 @@ function App() {
     if (!plan.valid || !plan.changes?.length) return;
     const methodLabel = fillMethods.find((method) => method.id === fillDraft.method)?.label ?? "Fill values";
     setRows((currentRows) => applyCellChanges(currentRows, plan.changes, "redo"));
-    pushHistory({ label: `${methodLabel}: ${fillDraft.column === ALL_ISSUE_COLUMNS ? "all issue columns" : fillDraft.column}`, kind: "cells", changes: plan.changes });
+    pushHistory({
+      label: `${methodLabel}: ${fillDraft.column === ALL_ISSUE_COLUMNS ? "all issue columns" : fillDraft.column}`,
+      kind: "cells",
+      changes: plan.changes,
+      recipeStep: {
+        type: "fill",
+        columns: fillDraft.column === ALL_ISSUE_COLUMNS ? [...fillIssueColumns] : [fillDraft.column],
+        scope: fillDraft.scope,
+        method: fillDraft.method,
+        customValue: fillDraft.customValue,
+        rules: snapshotColumnRules(fillDraft.column === ALL_ISSUE_COLUMNS ? fillIssueColumns : [fillDraft.column]),
+      },
+    });
     setIsFillDialogOpen(false);
     setIsValidationPanelOpen(false);
     clearDerivedResults();
@@ -1019,7 +1648,15 @@ function App() {
       ]),
     );
     setRows(nextRows);
-    if (conversionChanges.length) pushHistory({ label: `Convert ${selectedColumn}`, kind: "cells", changes: conversionChanges });
+    if (conversionChanges.length) pushHistory({
+      label: `Convert ${selectedColumn}`,
+      kind: "compound",
+      actions: [
+        { kind: "cells", changes: conversionChanges },
+        { kind: "config", before: { columnRules, relationshipRules }, after: { columnRules: nextColumnRules, relationshipRules } },
+      ],
+      recipeStep: { type: "numericConversion", column: selectedColumn, targetType },
+    });
     setColumnRules(nextColumnRules);
     setValidationIssues(validateRows(nextVisibleRows, nextVisibleColumnRules));
     setRelationshipIssues([]);
@@ -1050,7 +1687,6 @@ function App() {
 
     const nextIndex = (currentIssueIndex + 1 + validationIssues.length) % validationIssues.length;
     const issue = validationIssues[nextIndex];
-    const rowIndex = Math.max(0, issue.row - 1);
     const api = gridRef.current?.api;
 
     setCurrentIssueIndex(nextIndex);
@@ -1058,14 +1694,16 @@ function App() {
 
     if (!api) return;
 
+    const rowNode = api.getRowNode(issue.rowId);
+    const rowIndex = rowNode?.rowIndex ?? Math.max(0, issue.row - 1);
     api.paginationGoToPage(Math.floor(rowIndex / 100));
     api.ensureColumnVisible(issue.column);
     api.ensureIndexVisible(rowIndex, "middle");
     api.setFocusedCell(rowIndex, issue.column);
 
-    const rowNode = api.getDisplayedRowAtIndex(rowIndex);
-    if (rowNode) {
-      api.flashCells({ rowNodes: [rowNode], columns: [issue.column] });
+    const displayedRowNode = api.getDisplayedRowAtIndex(rowIndex);
+    if (displayedRowNode) {
+      api.flashCells({ rowNodes: [displayedRowNode], columns: [issue.column] });
     }
   }
 
@@ -1081,13 +1719,212 @@ function App() {
   }
 
   function downloadCsv(csv, outputFileName) {
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    downloadText(csv, outputFileName, "text/csv;charset=utf-8");
+  }
+
+  function downloadText(text, outputFileName, type) {
+    const blob = new Blob([text], { type });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
     link.download = outputFileName;
     link.click();
     URL.revokeObjectURL(url);
+  }
+
+  function renderCleaningTools() {
+    return (
+      <div className="rule-builder-backdrop" onMouseDown={() => setIsCleaningToolsOpen(false)}>
+        <section className="cleaning-tools-dialog" role="dialog" aria-modal="true" aria-labelledby="cleaning-tools-title" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="rule-builder-heading cleaning-tools-heading">
+            <div>
+              <span className="section-label">Cleaning workspace</span>
+              <h2 id="cleaning-tools-title">{getCleaningToolTitle(activeCleaningTool)}</h2>
+              <p>{getCleaningToolDescription(activeCleaningTool, visibleColumns.length)}</p>
+            </div>
+            <div className="cleaning-tools-heading-actions">
+              {activeCleaningTool !== "home" && <button type="button" className="dialog-close" onClick={() => { setActiveCleaningTool("home"); setRecipePreview(null); }}>All tools</button>}
+              <button type="button" className="dialog-close" onClick={() => setIsCleaningToolsOpen(false)}>Close</button>
+            </div>
+          </div>
+          {renderCleaningToolContent()}
+        </section>
+      </div>
+    );
+  }
+
+  function renderCleaningToolContent() {
+    if (activeCleaningTool === "home") {
+      return (
+        <div className="cleaning-tool-grid">
+          <ToolCard title="Find & Replace" description="Replace matching values across visible columns" onClick={() => setActiveCleaningTool("findReplace")} disabled={!visibleColumns.length} />
+          <ToolCard title="Duplicates" description="Find repeated rows using the columns you choose" onClick={() => openCleaningTools("duplicates")} disabled={!columns.length} />
+          <ToolCard title="Text Cleanup" description="Fix spacing and capitalization in bulk" onClick={() => openCleaningTools("textCleanup")} disabled={!columns.length} />
+          <ToolCard title="Split / Combine" description="Create columns by separating or joining values" onClick={() => openCleaningTools("splitCombine")} disabled={!columns.length} />
+          <ToolCard title="Recipes (WIP use with care)" description="Save this workflow and reuse it on another CSV" onClick={() => setActiveCleaningTool("recipes")} />
+        </div>
+      );
+    }
+
+    if (activeCleaningTool === "findReplace") {
+      return (
+        <>
+          <div className="cleaning-tool-body">
+            <label><span>Mode</span><select value={findReplaceDraft.mode} onChange={(event) => setFindReplaceDraft((draft) => ({ ...draft, mode: event.target.value }))}><option value="exact">Exact match</option><option value="contains">Contains text</option><option value="regex">Regex</option></select></label>
+            <label><span>Find</span><input value={findReplaceDraft.find} onChange={(event) => setFindReplaceDraft((draft) => ({ ...draft, find: event.target.value }))} placeholder={findReplaceDraft.mode === "regex" ? "\\bN/?A\\b" : "N/A"} /></label>
+            <label><span>Replace with</span><input value={findReplaceDraft.replace} onChange={(event) => setFindReplaceDraft((draft) => ({ ...draft, replace: event.target.value }))} placeholder="Leave empty to clear" /></label>
+            {findReplaceDraft.mode !== "regex" && <ToolCheck checked={findReplaceDraft.caseSensitive} onChange={() => setFindReplaceDraft((draft) => ({ ...draft, caseSensitive: !draft.caseSensitive }))} label="Case sensitive" />}
+            <ToolPreview valid={findReplacePreview.valid} error={findReplacePreview.error} summary={`${findReplacePreview.count.toLocaleString()} values will change`}>
+              {findReplacePreview.examples.map((item, index) => <div key={`${item.column}-${index}`}><code>{item.column}</code> {item.before} → {item.after || "(empty)"}</div>)}
+            </ToolPreview>
+          </div>
+          <ToolActions onCancel={() => setActiveCleaningTool("home")} onApply={applyFindReplace} applyLabel="Apply replacements" disabled={!findReplacePreview.valid || !findReplacePreview.count} />
+        </>
+      );
+    }
+
+    if (activeCleaningTool === "duplicates") {
+      return (
+        <>
+          <div className="cleaning-tool-body">
+            <ColumnPicker columns={columns} selected={duplicateDraft.columns} onToggle={(column) => toggleToolColumn(setDuplicateDraft, "columns", column)} onSelectAll={() => setDuplicateDraft((draft) => ({ ...draft, columns: [...columns] }))} onSelectVisible={() => setDuplicateDraft((draft) => ({ ...draft, columns: [...visibleColumns] }))} label="Compare columns" />
+            <div className="tool-option-grid">
+              <ToolCheck checked={duplicateDraft.trimValues} onChange={() => setDuplicateDraft((draft) => ({ ...draft, trimValues: !draft.trimValues }))} label="Ignore outer spaces" />
+              <ToolCheck checked={duplicateDraft.ignoreCase} onChange={() => setDuplicateDraft((draft) => ({ ...draft, ignoreCase: !draft.ignoreCase }))} label="Ignore capitalization" />
+            </div>
+            <label><span>When duplicates are found</span><select value={duplicateDraft.keep} onChange={(event) => setDuplicateDraft((draft) => ({ ...draft, keep: event.target.value }))}><option value="first">Keep the first row</option><option value="last">Keep the last row</option><option value="all">Delete every row in the duplicate group</option></select></label>
+            <ToolPreview valid={duplicatePreview.valid} error={duplicatePreview.error} summary={`${duplicatePreview.deleteCount.toLocaleString()} rows will be removed from ${duplicatePreview.groupCount.toLocaleString()} groups`}>
+              {duplicatePreview.examples.map((item, index) => <div key={index}><code>{item.values.join(" | ") || "(empty)"}</code> appears {item.count.toLocaleString()} times</div>)}
+            </ToolPreview>
+          </div>
+          <ToolActions onCancel={() => setActiveCleaningTool("home")} onApply={applyDuplicateRemoval} applyLabel="Remove duplicates" disabled={!duplicatePreview.valid || !duplicatePreview.deleteCount} danger />
+        </>
+      );
+    }
+
+    if (activeCleaningTool === "textCleanup") {
+      return (
+        <>
+          <div className="cleaning-tool-body">
+            <ColumnPicker columns={columns} selected={textCleanupDraft.columns} onToggle={(column) => toggleToolColumn(setTextCleanupDraft, "columns", column)} onSelectAll={() => setTextCleanupDraft((draft) => ({ ...draft, columns: [...columns] }))} onSelectVisible={() => setTextCleanupDraft((draft) => ({ ...draft, columns: [...visibleColumns] }))} label="Clean columns" />
+            <div className="tool-option-grid">
+              <ToolCheck checked={textCleanupDraft.trimEdges} onChange={() => setTextCleanupDraft((draft) => ({ ...draft, trimEdges: !draft.trimEdges }))} label="Trim outer spaces" />
+              <ToolCheck checked={textCleanupDraft.collapseWhitespace} onChange={() => setTextCleanupDraft((draft) => ({ ...draft, collapseWhitespace: !draft.collapseWhitespace }))} label="Collapse repeated spaces" />
+            </div>
+            <label><span>Capitalization</span><select value={textCleanupDraft.caseMode} onChange={(event) => setTextCleanupDraft((draft) => ({ ...draft, caseMode: event.target.value }))}><option value="keep">Keep as written</option><option value="lower">lowercase</option><option value="upper">UPPERCASE</option><option value="title">Title Case</option></select></label>
+            <ToolPreview valid={textCleanupPreview.valid} error={textCleanupPreview.error} summary={`${textCleanupPreview.changeCount.toLocaleString()} cells will change`}>
+              {textCleanupPreview.examples.map((item, index) => <div key={`${item.column}-${index}`}><code>{item.column}</code> {item.before || "(empty)"} → {item.after || "(empty)"}</div>)}
+            </ToolPreview>
+          </div>
+          <ToolActions onCancel={() => setActiveCleaningTool("home")} onApply={applyTextCleanup} applyLabel="Apply cleanup" disabled={!textCleanupPreview.valid || !textCleanupPreview.changeCount} />
+        </>
+      );
+    }
+
+    if (activeCleaningTool === "splitCombine") return renderSplitCombineTool();
+    if (activeCleaningTool === "recipes") return renderRecipesTool();
+    return null;
+  }
+
+  function renderSplitCombineTool() {
+    const operation = columnOperationMode === "split" ? splitDraft : combineDraft;
+    const preview = columnOperationMode === "split" ? splitPreview : combinePreview;
+    const operationValidation = validateSchemaOperation(columns, operation);
+    return (
+      <>
+        <div className="tool-mode-switch">
+          <button type="button" className={columnOperationMode === "split" ? "selected" : ""} onClick={() => setColumnOperationMode("split")}>Split a column</button>
+          <button type="button" className={columnOperationMode === "combine" ? "selected" : ""} onClick={() => setColumnOperationMode("combine")}>Combine columns</button>
+        </div>
+        {columnOperationMode === "split" ? (
+          <div className="cleaning-tool-body">
+            <label><span>Source column</span><select value={splitDraft.sourceColumn} onChange={(event) => setSplitDraft((draft) => ({ ...draft, sourceColumn: event.target.value, outputColumns: [`${event.target.value} 1`, `${event.target.value} 2`] }))}><option value="">Choose a column</option>{columns.map((column) => <option key={column} value={column}>{column}</option>)}</select></label>
+            <label><span>Split using</span><select value={splitDraft.separatorMode} onChange={(event) => setSplitDraft((draft) => ({ ...draft, separatorMode: event.target.value }))}><option value="whitespace">Spaces</option><option value="comma">Comma</option><option value="hyphen">Hyphen</option><option value="slash">Slash</option><option value="custom">Custom separator</option></select></label>
+            {splitDraft.separatorMode === "custom" && <label><span>Custom separator</span><input value={splitDraft.customSeparator} onChange={(event) => setSplitDraft((draft) => ({ ...draft, customSeparator: event.target.value }))} /></label>}
+            <fieldset className="tool-fieldset">
+              <legend>Output columns</legend>
+              {splitDraft.outputColumns.map((column, index) => (
+                <div className="output-column-row" key={index}>
+                  <input value={column} onChange={(event) => setSplitDraft((draft) => ({ ...draft, outputColumns: draft.outputColumns.map((item, itemIndex) => itemIndex === index ? event.target.value : item) }))} />
+                  <button type="button" className="secondary-button" onClick={() => setSplitDraft((draft) => ({ ...draft, outputColumns: draft.outputColumns.filter((_, itemIndex) => itemIndex !== index) }))} disabled={splitDraft.outputColumns.length <= 2}>Remove</button>
+                </div>
+              ))}
+              <button type="button" className="secondary-button" onClick={() => setSplitDraft((draft) => ({ ...draft, outputColumns: [...draft.outputColumns, `Part ${draft.outputColumns.length + 1}`] }))}>Add output column</button>
+            </fieldset>
+            <ToolCheck checked={splitDraft.removeSources} onChange={() => setSplitDraft((draft) => ({ ...draft, removeSources: !draft.removeSources }))} label="Remove the source column after splitting" />
+            <ToolPreview valid={preview.valid && operationValidation.valid} error={preview.error || operationValidation.error} summary={`${preview.changedRowCount.toLocaleString()} rows will be split`}>
+              {preview.examples.map((item, index) => <div key={index}><code>{item.before || "(empty)"}</code> → {item.outputs.join(" | ")}</div>)}
+            </ToolPreview>
+            <ToolActions onCancel={() => setActiveCleaningTool("home")} onApply={applySplitColumns} applyLabel="Split column" disabled={!preview.valid || !operationValidation.valid} />
+          </div>
+        ) : (
+          <div className="cleaning-tool-body">
+            <ColumnPicker columns={columns} selected={combineDraft.sourceColumns} onToggle={(column) => toggleToolColumn(setCombineDraft, "sourceColumns", column)} label="Source columns" />
+            {!!combineDraft.sourceColumns.length && (
+              <div className="ordered-column-list">
+                {combineDraft.sourceColumns.map((column, index) => (
+                  <div key={column}>
+                    <span>{index + 1}. {column}</span>
+                    <div><button type="button" className="secondary-button" disabled={index === 0} onClick={() => setCombineDraft((draft) => ({ ...draft, sourceColumns: moveArrayItem(draft.sourceColumns, index, -1) }))}>Up</button><button type="button" className="secondary-button" disabled={index === combineDraft.sourceColumns.length - 1} onClick={() => setCombineDraft((draft) => ({ ...draft, sourceColumns: moveArrayItem(draft.sourceColumns, index, 1) }))}>Down</button></div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <label><span>Output column</span><input value={combineDraft.outputColumn} onChange={(event) => setCombineDraft((draft) => ({ ...draft, outputColumn: event.target.value }))} /></label>
+            <label><span>Join using</span><select value={combineDraft.separatorMode} onChange={(event) => setCombineDraft((draft) => ({ ...draft, separatorMode: event.target.value }))}><option value="space">Space</option><option value="comma">Comma and space</option><option value="hyphen">Hyphen</option><option value="slash">Slash</option><option value="none">No separator</option><option value="custom">Custom separator</option></select></label>
+            {combineDraft.separatorMode === "custom" && <label><span>Custom separator</span><input value={combineDraft.customSeparator} onChange={(event) => setCombineDraft((draft) => ({ ...draft, customSeparator: event.target.value }))} /></label>}
+            <div className="tool-option-grid"><ToolCheck checked={combineDraft.skipEmpty} onChange={() => setCombineDraft((draft) => ({ ...draft, skipEmpty: !draft.skipEmpty }))} label="Skip empty values" /><ToolCheck checked={combineDraft.removeSources} onChange={() => setCombineDraft((draft) => ({ ...draft, removeSources: !draft.removeSources }))} label="Remove source columns" /></div>
+            <ToolPreview valid={preview.valid && operationValidation.valid} error={preview.error || operationValidation.error} summary={`${preview.changedRowCount.toLocaleString()} rows will be combined`}>
+              {preview.examples.map((item, index) => <div key={index}><code>{item.values.join(" | ")}</code> → {item.after || "(empty)"}</div>)}
+            </ToolPreview>
+            <ToolActions onCancel={() => setActiveCleaningTool("home")} onApply={applyCombinedColumns} applyLabel="Combine columns" disabled={!preview.valid || !operationValidation.valid} />
+          </div>
+        )}
+      </>
+    );
+  }
+
+  function renderRecipesTool() {
+    return (
+      <div className="recipe-workspace">
+        <section className="recipe-capture-card">
+          <div><span className="field-label">Current session</span><strong>{capturedRecipeSteps.length.toLocaleString()} repeatable step{capturedRecipeSteps.length === 1 ? "" : "s"} captured</strong><p>Manual cell edits are never included</p></div>
+          {capturedRecipeSteps.length > 0 && (
+            <div className="recipe-step-list">
+              {capturedRecipeSteps.map((step, index) => (
+                <div className="recipe-step" key={step.captureId}>
+                  <span><strong>{index + 1}. {getRecipeStepLabel(step)}</strong><small>{describeRecipeStep(step)}</small></span>
+                  <div><button type="button" className="secondary-button" disabled={index === 0} onClick={() => reorderCapturedRecipeStep(index, -1)}>Up</button><button type="button" className="secondary-button" disabled={index === capturedRecipeSteps.length - 1} onClick={() => reorderCapturedRecipeStep(index, 1)}>Down</button><button type="button" className="secondary-button" onClick={() => removeCapturedRecipeStep(step.captureId)}>Remove</button></div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="recipe-save-row"><input value={recipeName} onChange={(event) => setRecipeName(event.target.value)} placeholder="Recipe name" /><button type="button" onClick={saveCurrentRecipe} disabled={!columns.length}>Save recipe</button></div>
+        </section>
+
+        <div className="recipe-library-heading">
+          <div><span className="field-label">Saved recipes</span><strong>{savedRecipes.length.toLocaleString()} saved in this browser</strong></div>
+          <label className="file-picker recipe-import">Import JSON<input type="file" accept="application/json,.json" onChange={importRecipe} /></label>
+        </div>
+        {recipeMessage && <div className="tool-message">{recipeMessage}</div>}
+        {savedRecipes.length === 0 ? <div className="tool-empty">No recipes saved yet</div> : (
+          <div className="recipe-library">
+            {savedRecipes.map((recipe) => (
+              <article className="recipe-card" key={recipe.id}>
+                <div>{renamingRecipeId === recipe.id ? <div className="recipe-rename"><input value={renamingRecipeName} onChange={(event) => setRenamingRecipeName(event.target.value)} /><button type="button" onClick={() => saveRecipeName(recipe.id)}>Save</button></div> : <><strong>{recipe.name}</strong><p>{recipe.steps.length.toLocaleString()} steps · {recipe.requiredColumns.length.toLocaleString()} required columns</p></>}</div>
+                <div className="recipe-card-actions"><button type="button" onClick={() => previewRecipe(recipe)} disabled={!rows.length}>Preview & Run</button><button type="button" className="secondary-button" onClick={() => beginRenameRecipe(recipe)}>Rename</button><button type="button" className="secondary-button" onClick={() => duplicateRecipe(recipe)}>Duplicate</button><button type="button" className="secondary-button" onClick={() => exportRecipe(recipe)}>Export</button><button type="button" className="secondary-button" onClick={() => deleteRecipe(recipe)}>Delete</button></div>
+              </article>
+            ))}
+          </div>
+        )}
+        {recipePreview && (
+          <section className={`recipe-preview-card ${recipePreview.valid ? "" : "invalid"}`}>
+            <div><span className="field-label">Recipe preview</span><strong>{recipePreview.recipe.name}</strong></div>
+            {recipePreview.valid ? <><div className="recipe-summary-list">{recipePreview.summary.map((item, index) => <div key={`${item.label}-${index}`}><span>{item.label}</span><strong>{item.count.toLocaleString()} {item.unit}</strong></div>)}</div><button type="button" onClick={applyPreviewedRecipe}>Apply recipe</button></> : <strong className="error-text">{recipePreview.error}</strong>}
+          </section>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -1458,9 +2295,12 @@ function App() {
                 </span>
               </div>
               <div className="issue-jump-actions">
-                <button type="button" className="secondary-button" onClick={() => setIsFindReplaceOpen(true)} disabled={!visibleColumns.length}>Find & Replace</button>
+                <button type="button" className="secondary-button" onClick={() => openCleaningTools("home")}>Cleaning Tools{capturedRecipeSteps.length ? ` (${capturedRecipeSteps.length})` : ""}</button>
                 <button type="button" className="secondary-button" onClick={undo} disabled={!history.past.length}>Undo</button>
                 <button type="button" className="secondary-button" onClick={redo} disabled={!history.future.length}>Redo</button>
+                <button type="button" className={`secondary-button ${showIssueRowsOnly ? "active-view-button" : ""}`} onClick={() => setShowIssueRowsOnly((current) => !current)} disabled={!validationIssues.length || hasUnscannedChanges}>
+                  {showIssueRowsOnly ? "Show All Rows" : "Issues Only"}
+                </button>
                 <button type="button" onClick={jumpToNextIssue} disabled={!validationIssues.length}>Next Row</button>
               </div>
             </div>
@@ -1468,13 +2308,13 @@ function App() {
           <div className="ag-theme-quartz table-grid">
             <AgGridReact
               ref={gridRef}
-              rowData={visibleRows}
+              rowData={gridRows}
               columnDefs={gridColumns}
               defaultColDef={{ editable: true, filter: true, sortable: true, resizable: true, cellDataType: false }}
               getRowId={(params) => params.data.__rowId}
               pagination
               paginationPageSize={100}
-              rowSelection="multiple"
+              rowSelection={GRID_ROW_SELECTION}
               onCellValueChanged={handleCellValueChanged}
               onCellClicked={(event) => {
                 if (event.colDef.field && event.colDef.field !== "__rowId") {
@@ -1568,21 +2408,7 @@ function App() {
           </div>
         )}
       </aside>
-      {isFindReplaceOpen && (
-        <div className="rule-builder-backdrop" onMouseDown={() => setIsFindReplaceOpen(false)}>
-          <section className="find-replace-dialog" role="dialog" aria-modal="true" aria-labelledby="find-replace-title" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="rule-builder-heading"><div><span className="section-label">Bulk cleaning</span><h2 id="find-replace-title">Find & Replace</h2><p>Applies across {visibleColumns.length.toLocaleString()} visible columns. Hidden columns are unchanged.</p></div><button type="button" className="dialog-close" onClick={() => setIsFindReplaceOpen(false)}>Close</button></div>
-            <div className="rule-builder-body">
-              <label><span>Mode</span><select value={findReplaceDraft.mode} onChange={(event) => setFindReplaceDraft((draft) => ({ ...draft, mode: event.target.value }))}><option value="exact">Exact match</option><option value="contains">Contains text</option><option value="regex">Regex</option></select></label>
-              <label><span>Find</span><input value={findReplaceDraft.find} onChange={(event) => setFindReplaceDraft((draft) => ({ ...draft, find: event.target.value }))} placeholder={findReplaceDraft.mode === "regex" ? "\\bN/?A\\b" : "N/A"} /></label>
-              <label><span>Replace with</span><input value={findReplaceDraft.replace} onChange={(event) => setFindReplaceDraft((draft) => ({ ...draft, replace: event.target.value }))} placeholder="Leave empty to clear" /></label>
-              {findReplaceDraft.mode !== "regex" && <label className="check-row find-case-toggle"><input type="checkbox" checked={findReplaceDraft.caseSensitive} onChange={() => setFindReplaceDraft((draft) => ({ ...draft, caseSensitive: !draft.caseSensitive }))} /><span className="fake-checkbox" aria-hidden="true" /><span className="column-name">Case sensitive</span></label>}
-              <div className="find-preview"><span className="field-label">Preview</span>{!findReplacePreview.valid ? <strong className="error-text">{findReplacePreview.error}</strong> : <><strong>{findReplacePreview.count.toLocaleString()} values will change</strong>{findReplacePreview.examples.map((item, index) => <div key={`${item.column}-${index}`}><code>{item.column}</code> {item.before} → {item.after || "(empty)"}</div>)}</>}</div>
-            </div>
-            <div className="rule-builder-actions"><button type="button" className="secondary-button" onClick={() => setIsFindReplaceOpen(false)}>Cancel</button><button type="button" onClick={applyFindReplace} disabled={!findReplacePreview.valid || !findReplacePreview.count}>Apply replacements</button></div>
-          </section>
-        </div>
-      )}
+      {isCleaningToolsOpen && renderCleaningTools()}
       {isFillDialogOpen && (
         <div className="rule-builder-backdrop" onMouseDown={() => setIsFillDialogOpen(false)}>
           <section className="fill-dialog" role="dialog" aria-modal="true" aria-labelledby="fill-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -1931,6 +2757,77 @@ function InspectorStat({ label, value, tone = "default" }) {
   );
 }
 
+function ToolCard({ title, description, onClick, disabled = false, badge = "" }) {
+  return (
+    <button type="button" className="cleaning-tool-card" onClick={onClick} disabled={disabled}>
+      <span><strong>{title}</strong>{badge && <small>{badge}</small>}</span>
+      <p>{description}</p>
+    </button>
+  );
+}
+
+function ToolCheck({ checked, onChange, label }) {
+  return (
+    <label className="check-row tool-check">
+      <input type="checkbox" checked={checked} onChange={onChange} />
+      <span className="fake-checkbox" aria-hidden="true" />
+      <span className="column-name">{label}</span>
+    </label>
+  );
+}
+
+function ColumnPicker({ columns, selected, onToggle, onSelectAll, onSelectVisible, label }) {
+  return (
+    <fieldset className="tool-fieldset column-picker-fieldset">
+      <legend>{label}</legend>
+      {(onSelectAll || onSelectVisible) && <div className="column-picker-actions">{onSelectVisible && <button type="button" className="secondary-button" onClick={onSelectVisible}>Use visible</button>}{onSelectAll && <button type="button" className="secondary-button" onClick={onSelectAll}>Use all</button>}<button type="button" className="secondary-button" onClick={() => selected.forEach(onToggle)} disabled={!selected.length}>Clear</button></div>}
+      <div className="tool-column-list">
+        {columns.map((column) => <ToolCheck key={column} checked={selected.includes(column)} onChange={() => onToggle(column)} label={column} />)}
+      </div>
+    </fieldset>
+  );
+}
+
+function ToolPreview({ valid, error, summary, children }) {
+  return (
+    <div className={`tool-preview ${valid ? "" : "invalid"}`}>
+      <span className="field-label">Preview</span>
+      {valid ? <><strong>{summary}</strong>{children}</> : <strong className="error-text">{error}</strong>}
+    </div>
+  );
+}
+
+function ToolActions({ onCancel, onApply, applyLabel, disabled, danger = false }) {
+  return (
+    <div className="rule-builder-actions cleaning-tool-actions">
+      <button type="button" className="secondary-button" onClick={onCancel}>Back</button>
+      <button type="button" className={danger ? "delete-issue-rows-button" : ""} onClick={onApply} disabled={disabled}>{applyLabel}</button>
+    </div>
+  );
+}
+
+function getCleaningToolTitle(tool) {
+  return ({
+    home: "Cleaning Tools",
+    findReplace: "Find & Replace",
+    duplicates: "Find Duplicates",
+    textCleanup: "Text Cleanup",
+    splitCombine: "Split / Combine Columns",
+    recipes: "Cleaning Recipes",
+  })[tool] ?? "Cleaning Tools";
+}
+
+function getCleaningToolDescription(tool, visibleColumnCount) {
+  return ({
+    home: "Choose an action. Every data change includes a preview and Undo support",
+    findReplace: `Applies across all visible columns, hidden columns are unchanged`,
+    duplicates: "Compare selected columns",
+    textCleanup: "Fix extra spaces or change how text is capitalized",
+    splitCombine: "Split or combine columns",
+    recipes: "Stores every action made automatically, for files that shares the same format/structure (WIP)",
+  })[tool] ?? "";
+}
+
 function ColumnHeader(props) {
   const field = props.column?.getColDef()?.field;
   const isSelected = props.selectedColumn === field;
@@ -1992,6 +2889,101 @@ function normalizeRow(row) {
   }
   normalized.__rowId = crypto.randomUUID();
   return normalized;
+}
+
+function createSchemaHistoryAction({ label, operation, rows, addedColumns, removedColumns, before, after, recipeStep }) {
+  const removedValues = removedColumns.length
+    ? rows.map((row) => ({ rowId: row.__rowId, values: Object.fromEntries(removedColumns.map((column) => [column, row[column] ?? ""])) }))
+    : [];
+  return {
+    label,
+    kind: "schema",
+    operation: cloneSerializable(operation),
+    addedColumns: [...addedColumns],
+    removedColumns: [...removedColumns],
+    removedValues,
+    before: cloneSerializable(before),
+    after: cloneSerializable(after),
+    recipeStep,
+  };
+}
+
+function undoSchemaTransformRows(rows, action) {
+  const removedByRowId = new Map(action.removedValues.map((item) => [item.rowId, item.values]));
+  return rows.map((row) => {
+    const nextRow = { ...row };
+    for (const column of action.addedColumns) delete nextRow[column];
+    const removedValues = removedByRowId.get(row.__rowId);
+    if (removedValues) Object.assign(nextRow, removedValues);
+    return nextRow;
+  });
+}
+
+function buildNumericConversionChanges(rows, column, targetType) {
+  const changes = [];
+  for (const row of rows) {
+    const numericValue = parseNumericValueForConversion(row[column]);
+    if (numericValue === null) continue;
+    const after = targetType === "Integer"
+      ? String(Math.trunc(numericValue))
+      : Number.isInteger(numericValue) ? `${numericValue}.0` : String(numericValue);
+    if (String(row[column]) !== after) changes.push({ rowId: row.__rowId, column, before: row[column], after });
+  }
+  return { changes };
+}
+
+function mergeRelationshipRules(currentRules, recipeRules) {
+  const nextRules = currentRules.map((rule) => cloneSerializable(rule));
+  const indexByFormula = new Map(nextRules.map((rule, index) => [`${rule.targetColumn}\u0000${rule.formula}`, index]));
+  const usedIds = new Set(nextRules.map((rule) => rule.id));
+  for (const recipeRule of recipeRules) {
+    const key = `${recipeRule.targetColumn}\u0000${recipeRule.formula}`;
+    const existingIndex = indexByFormula.get(key);
+    if (existingIndex === undefined) {
+      const nextRule = cloneSerializable(recipeRule);
+      if (usedIds.has(nextRule.id)) nextRule.id = `relationship-${crypto.randomUUID()}`;
+      usedIds.add(nextRule.id);
+      nextRules.push(nextRule);
+      indexByFormula.set(key, nextRules.length - 1);
+    } else {
+      const existing = nextRules[existingIndex];
+      nextRules[existingIndex] = { ...cloneSerializable(recipeRule), id: existing.id };
+    }
+  }
+  return nextRules;
+}
+
+function getRecipeStepColumns(step) {
+  if (["findReplace", "fill", "textCleanup", "deduplicate", "deleteInvalidRows"].includes(step.type)) return step.columns ?? [];
+  if (step.type === "numericConversion") return [step.column].filter(Boolean);
+  if (step.type === "splitColumn") return [step.sourceColumn].filter(Boolean);
+  if (step.type === "combineColumns") return step.sourceColumns ?? [];
+  return [];
+}
+
+function describeRecipeStep(step) {
+  const columns = getRecipeStepColumns(step);
+  if (step.type === "splitColumn") return `${step.sourceColumn} into ${step.outputColumns.join(", ")}`;
+  if (step.type === "combineColumns") return `${step.sourceColumns.join(", ")} into ${step.outputColumn}`;
+  if (step.type === "numericConversion") return `${step.column} to ${step.targetType}`;
+  if (step.type === "relationshipFix") return `${step.relationshipIds?.length ?? 0} relationship rule${step.relationshipIds?.length === 1 ? "" : "s"}`;
+  return columns.length ? columns.join(", ") : "Uses the saved column rules";
+}
+
+function moveArrayItem(items, index, direction) {
+  const nextIndex = index + direction;
+  if (nextIndex < 0 || nextIndex >= items.length) return items;
+  const next = [...items];
+  [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+  return next;
+}
+
+function cloneSerializable(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function toFileName(value) {
+  return String(value ?? "recipe").trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "recipe";
 }
 
 function collectColumns(rows) {
