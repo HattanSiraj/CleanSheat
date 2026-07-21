@@ -1218,7 +1218,7 @@ function App() {
                   </li>
                   <li>
                     <span>3</span>
-                    <div><strong>Set column types</strong><p>Choose <code>Number</code> for <span className="column-reference">Quantity</span>, <span className="column-reference">Price Per Unit</span>, and <span className="column-reference">Total Spent</span> by clicking their column names in the table below. Types do not change your data they tell the scanner what each cell should look like also every visible cell is checked against its column's selected type when you scan</p></div>
+                    <div><strong>Set column types</strong><p>Choose <code>Number</code> for <span className="column-reference">Quantity</span>, <span className="column-reference">Price Per Unit</span>, and <span className="column-reference">Total Spent</span> by clicking each column name in the table below and changing the option that appears on the right, then click <HintCode hint="Checks every visible cell against the type and format selected for its column">Scan Again</HintCode>. Column types do not change your data; they tell the scanner what each cell should look like, and every visible cell is checked against its column's selected type during a scan</p></div>
                   </li>
                   <li>
                     <span>4</span>
@@ -1235,15 +1235,23 @@ function App() {
                   </li>
                   <li>
                     <span>5</span>
-                    <div><strong>Fix data directly</strong><p>Use <HintCode hint="Jumps the table to the next detected problem.">Next Row</HintCode> to jump to an issue, then click the cell and edit it. Category cells offer existing values as choices</p></div>
+                    <div><strong>Scan and fix</strong><p>Click <HintCode hint="Checks every visible cell against its column type again after your edits.">Scan Again</HintCode> to catch values such as ERROR or unknown in <span className="column-reference">Total Spent</span>, open <HintCode hint="Shows every empty or invalid cell found during the latest scan">Validation Issues</HintCode> to review them, then choose <HintCode hint="Opens automatic filling methods for the detected empty or invalid cells">Fill invalid values</HintCode> and use whichever filling method fits your data</p></div>
                   </li>
                   <li>
                     <span>6</span>
-                    <div><strong>Scan for remaining problems</strong><p>Click <HintCode hint="Checks every visible cell against its column type again after your edits.">Scan Again</HintCode>. The sample's <code>ERROR</code> value in <span className="column-reference">Total Spent</span> should be caught once that column is set to Number</p></div>
+                    <div><strong>Manual fix</strong><p>If automatic filling cannot handle an issue, use <HintCode hint="Jumps the table to the next detected problem.">Next Row</HintCode> to find it, then click the cell and edit it. Category cells offer existing values as choices</p></div>
                   </li>
                   <li>
                     <span>7</span>
-                    <div><strong>Export when finished</strong><p>Run one final scan, then choose <HintCode hint="Downloads the currently visible columns as a new CSV file.">Export CSV</HintCode> to download the cleaned visible columns</p></div>
+                    <div><strong>Remove rows the formulas cannot fix</strong><p>Some rows are missing values in two or more related columns, so the formulas do not have enough information to calculate them. After fixing the other problems and scanning again, open <HintCode hint="Shows every empty or invalid cell found during the latest scan">Validation Issues</HintCode> and choose <HintCode hint="Removes every row containing at least one issue from the latest scan">Delete rows with issues</HintCode> to remove the remaining incomplete rows (use this option only when no valid fix can be applied)</p></div>
+                  </li>
+                  <li>
+                    <span>8</span>
+                    <div><strong>Export when finished</strong><p><HintCode hint="Downloads the currently visible columns as a new CSV file.">Export CSV</HintCode> When you are done, all changes will be applied</p></div>
+                  </li>
+                  <li>
+                    <span>9</span>
+                    <div><strong>Try the rest of the table</strong><p>Now show the remaining columns and try cleaning the rest on your own. There are category and date issues, set their types and formats, scan again, and fix what you find</p></div>
                   </li>
                 </ol>
               </div>
@@ -1264,10 +1272,11 @@ function App() {
                 <div className="relationship-editor">
                   <div>
                     <span className="field-label">{relationshipDraft.id ? "Edit relationship" : "New relationship"}</span>
-                    <p>Build a formula from your columns. Example: <code>[Unit amount] * [Unit price]</code></p>
+                    <p>Build a formula using your columns Example: [Target Column] = [Unit amount] * [Unit price]<br />
+                      You don't have to add equal sign '=' the assigned [Target Column] is what's on the left side of the equation</p>
                   </div>
                   <label>
-                    <span>Rule name</span>
+                    <span>Rule name (optional)</span>
                     <input value={relationshipDraft.name} onChange={(event) => updateRelationshipDraft("name", event.target.value)} placeholder="Order total" />
                   </label>
                   <label>
@@ -1282,7 +1291,7 @@ function App() {
                     <input value={relationshipDraft.formula} onChange={(event) => updateRelationshipDraft("formula", event.target.value)} placeholder="[Unit amount] * [Unit price]" />
                   </label>
                   <div className="formula-tools">
-                    <span className="field-label">Math symbols</span>
+                    <span className="field-label">Math symbols </span>
                     <div className="formula-token-picker" aria-label="Insert math symbols">
                       <button type="button" onClick={() => insertRelationshipToken("+")} title="Add">+ Add</button>
                       <button type="button" onClick={() => insertRelationshipToken("-")} title="Subtract or make the next value negative">- Subtract</button>
@@ -1292,7 +1301,7 @@ function App() {
                       <button type="button" onClick={() => insertRelationshipToken("(")} title="Open a grouped calculation">( Open</button>
                       <button type="button" onClick={() => insertRelationshipToken(")")} title="Close a grouped calculation">) Close</button>
                     </div>
-                    <p><code>()</code> groups calculations. <code>*</code>, <code>/</code>, and <code>%</code> run before <code>+</code> and <code>-</code>. Add a number directly in the formula when needed.</p>
+                    <p>All the symbols follows the order of operations also you can use the keyboard (you don't have to use the buttons), add a number directly in the formula when needed.</p>
                   </div>
                   <div className="formula-column-picker">
                     {columns.map((column) => (
