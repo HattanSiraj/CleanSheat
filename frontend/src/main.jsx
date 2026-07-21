@@ -1247,11 +1247,11 @@ function App() {
                   </li>
                   <li>
                     <span>8</span>
-                    <div><strong>Export when finished</strong><p><HintCode hint="Downloads the currently visible columns as a new CSV file.">Export CSV</HintCode> When you are done, all changes will be applied</p></div>
+                    <div><strong>Try the rest of the table</strong><p>Now show the remaining columns and try cleaning the rest on your own. There are category and date issues, set their types and formats, scan again, and fix what you find</p></div>
                   </li>
                   <li>
                     <span>9</span>
-                    <div><strong>Try the rest of the table</strong><p>Now show the remaining columns and try cleaning the rest on your own. There are category and date issues, set their types and formats, scan again, and fix what you find</p></div>
+                    <div><strong>Export when finished</strong><p><HintCode hint="Downloads the currently visible columns as a new CSV file.">Export CSV</HintCode> When you are done, all changes will be applied</p></div>
                   </li>
                 </ol>
               </div>
