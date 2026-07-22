@@ -4,6 +4,14 @@ import { AgGridReact } from "ag-grid-react";
 import Papa from "papaparse";
 import { ALL_ISSUE_COLUMNS, calculateColumnFill, calculateMultiColumnCustomFill, getFillMethodsForType } from "./fillMethods.js";
 import {
+  DEFAULT_MISSING_CONDITION,
+  getMissingIssue,
+  isMissingRuleValid,
+  isMissingValue,
+  normalizeMissingRule,
+  parseMissingTokens,
+} from "./missingValues.js";
+import {
   applySchemaTransformToRows,
   buildDuplicatePlan,
   buildTextCleanupPlan,
@@ -22,6 +30,9 @@ import {
   serializeRecipe,
   validateRecipe,
 } from "./recipeEngine.js";
+import { CHALLENGES, getChallenge, hasCurrentChallengeRevision } from "./challengeData.js";
+import { evaluateChallenge } from "./challengeEngine.js";
+import { deleteWorkspace, loadWorkspace, saveWorkspace } from "./workspaceStorage.js";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-quartz.css";
 import "./styles.css";
@@ -73,7 +84,23 @@ const GRID_ROW_SELECTION = {
   enableClickSelection: true,
 };
 const EMPTY_RELATIONSHIP_DRAFT = { id: "", name: "", targetColumn: "", formula: "", enabled: true };
-const EMPTY_FILL_DRAFT = { column: "", scope: "both", method: "custom", customValue: "" };
+const EMPTY_FILL_DRAFT = {
+  column: "",
+  scope: "both",
+  method: "custom",
+  customValue: "",
+  groupBy: "",
+  orderBy: "",
+  orderDirection: "asc",
+};
+const EMPTY_MISSING_RULE_DRAFT = {
+  column: "",
+  missingPolicy: "required",
+  missingTokens: [],
+  missingTokensInput: "",
+  missingTokenCaseSensitive: false,
+  missingCondition: DEFAULT_MISSING_CONDITION,
+};
 const EMPTY_DUPLICATE_DRAFT = { columns: [], keep: "first", trimValues: false, ignoreCase: false };
 const EMPTY_TEXT_CLEANUP_DRAFT = { columns: [], trimEdges: true, collapseWhitespace: true, caseMode: "keep" };
 const EMPTY_SPLIT_DRAFT = { type: "splitColumn", sourceColumn: "", outputColumns: ["Part 1", "Part 2"], separatorMode: "whitespace", customSeparator: "", removeSources: false };
@@ -138,6 +165,8 @@ function App() {
   const [fillDraft, setFillDraft] = useState(EMPTY_FILL_DRAFT);
   const [isCleaningToolsOpen, setIsCleaningToolsOpen] = useState(false);
   const [activeCleaningTool, setActiveCleaningTool] = useState("home");
+  const [missingRuleDraft, setMissingRuleDraft] = useState(EMPTY_MISSING_RULE_DRAFT);
+  const [missingRuleNotice, setMissingRuleNotice] = useState("");
   const [duplicateDraft, setDuplicateDraft] = useState(EMPTY_DUPLICATE_DRAFT);
   const [textCleanupDraft, setTextCleanupDraft] = useState(EMPTY_TEXT_CLEANUP_DRAFT);
   const [splitDraft, setSplitDraft] = useState(EMPTY_SPLIT_DRAFT);
@@ -151,11 +180,30 @@ function App() {
   const [recipePreview, setRecipePreview] = useState(null);
   const [renamingRecipeId, setRenamingRecipeId] = useState("");
   const [renamingRecipeName, setRenamingRecipeName] = useState("");
+  const [isChallengeBrowserOpen, setIsChallengeBrowserOpen] = useState(false);
+  const [activeChallengeId, setActiveChallengeId] = useState("");
+  const [isObjectivesOpen, setIsObjectivesOpen] = useState(true);
+  const [challengeEvaluation, setChallengeEvaluation] = useState(null);
+  const [isChallengeResultOpen, setIsChallengeResultOpen] = useState(false);
+  const [challengeRecords, setChallengeRecords] = useState(readChallengeRecords);
+  const [savedWorkspaceIds, setSavedWorkspaceIds] = useState([]);
+  const [pendingChallengeLaunch, setPendingChallengeLaunch] = useState(null);
+  const [challengeStoryPage, setChallengeStoryPage] = useState(0);
+  const [challengeStoryCharacterCount, setChallengeStoryCharacterCount] = useState(0);
+  const [isChallengeLoading, setIsChallengeLoading] = useState(false);
+  const [challengeLoadingTitle, setChallengeLoadingTitle] = useState("");
+  const [challengeLoadError, setChallengeLoadError] = useState("");
+  const [autosaveReady, setAutosaveReady] = useState(false);
+  const [autosaveStatus, setAutosaveStatus] = useState("Loading saved work...");
   const deferredFillDraft = useDeferredValue(fillDraft);
   const deferredDuplicateDraft = useDeferredValue(duplicateDraft);
   const deferredTextCleanupDraft = useDeferredValue(textCleanupDraft);
   const deferredSplitDraft = useDeferredValue(splitDraft);
   const deferredCombineDraft = useDeferredValue(combineDraft);
+  const activeChallenge = getChallenge(activeChallengeId);
+  const storyChallenge = getChallenge(pendingChallengeLaunch?.challengeId);
+  const challengeStoryText = storyChallenge?.story?.[challengeStoryPage] ?? "";
+  const isChallengeStoryPageComplete = challengeStoryCharacterCount >= challengeStoryText.length;
 
   useEffect(() => {
     window.localStorage.setItem(REGEX_STORAGE_KEY, JSON.stringify(savedRegexRules));
@@ -174,16 +222,107 @@ function App() {
   }, [savedRecipes]);
 
   useEffect(() => {
-    if (!pendingConfirmation && !isRuleBuilderOpen && !isFillDialogOpen && !isCleaningToolsOpen) return undefined;
+    window.localStorage.setItem("cleansheet.challenge-records", JSON.stringify(challengeRecords));
+  }, [challengeRecords]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadWorkspace("normal")
+      .then((snapshot) => {
+        if (cancelled) return;
+        if (snapshot) restoreWorkspaceSnapshot(snapshot, "");
+        setAutosaveReady(true);
+        setAutosaveStatus(snapshot ? "Restored from this browser" : "Autosave ready");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAutosaveReady(true);
+        setAutosaveStatus("Autosave unavailable");
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!autosaveReady || !rows.length) return undefined;
+    setAutosaveStatus("Saving...");
+    const timeoutId = window.setTimeout(() => {
+      const workspaceId = activeChallengeId ? `challenge:${activeChallengeId}` : "normal";
+      saveWorkspace(workspaceId, createCurrentWorkspaceSnapshot())
+        .then(() => setAutosaveStatus("Saved in this browser"))
+        .catch(() => setAutosaveStatus("Autosave unavailable"));
+    }, 700);
+    return () => window.clearTimeout(timeoutId);
+  }, [activeChallengeId, autosaveReady, challengeEvaluation, columnRules, columns, fileName, history, lastScannedAt, relationshipRules, rows, selectedColumn, validationIssues, visibleColumns]);
+
+  useEffect(() => {
+    if (!isChallengeBrowserOpen) return;
+    let cancelled = false;
+    Promise.all(CHALLENGES.map(async (challenge) => {
+      const workspaceId = `challenge:${challenge.id}`;
+      const snapshot = await loadWorkspace(workspaceId).catch(() => null);
+      if (!snapshot) return null;
+      if (hasCurrentChallengeRevision(challenge, snapshot.challengeRevision)) return workspaceId;
+      await deleteWorkspace(workspaceId).catch(() => {});
+      return null;
+    }))
+      .then((workspaceIds) => {
+        if (cancelled) return;
+        setSavedWorkspaceIds(workspaceIds.filter(Boolean));
+        setChallengeRecords((current) => Object.fromEntries(
+          Object.entries(current).filter(([challengeId, record]) => (
+            hasCurrentChallengeRevision(getChallenge(challengeId), record?.revision)
+          )),
+        ));
+      })
+      .catch(() => {
+        if (!cancelled) setSavedWorkspaceIds([]);
+      });
+    return () => { cancelled = true; };
+  }, [isChallengeBrowserOpen]);
+
+  useEffect(() => {
+    if (!pendingChallengeLaunch || !challengeStoryText) return undefined;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setChallengeStoryCharacterCount(challengeStoryText.length);
+      return undefined;
+    }
+    setChallengeStoryCharacterCount(0);
+    const intervalId = window.setInterval(() => {
+      setChallengeStoryCharacterCount((currentCount) => {
+        if (currentCount >= challengeStoryText.length) {
+          window.clearInterval(intervalId);
+          return currentCount;
+        }
+        return currentCount + 1;
+      });
+    }, 28);
+    return () => window.clearInterval(intervalId);
+  }, [challengeStoryPage, challengeStoryText, pendingChallengeLaunch]);
+
+  useEffect(() => {
+    if (!pendingConfirmation && !isRuleBuilderOpen && !isFillDialogOpen && !isCleaningToolsOpen && !isChallengeBrowserOpen && !isChallengeResultOpen && !pendingChallengeLaunch) return undefined;
     const handleKeyDown = (event) => {
-      if (event.key === "Escape") setPendingConfirmation(null);
-      if (event.key === "Escape") setIsRuleBuilderOpen(false);
-      if (event.key === "Escape") setIsFillDialogOpen(false);
-      if (event.key === "Escape") setIsCleaningToolsOpen(false);
+      if (event.key === "Escape" && pendingChallengeLaunch) {
+        closeChallengeStory();
+        return;
+      }
+      if (event.code === "Space" && pendingChallengeLaunch && !isChallengeStoryPageComplete) {
+        event.preventDefault();
+        revealChallengeStoryPage();
+        return;
+      }
+      if (event.key === "Escape") {
+        setPendingConfirmation(null);
+        setIsRuleBuilderOpen(false);
+        setIsFillDialogOpen(false);
+        setIsCleaningToolsOpen(false);
+        setIsChallengeBrowserOpen(false);
+        setIsChallengeResultOpen(false);
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isCleaningToolsOpen, isFillDialogOpen, isRuleBuilderOpen, pendingConfirmation]);
+  }, [isChallengeBrowserOpen, isChallengeResultOpen, isChallengeStoryPageComplete, isCleaningToolsOpen, isFillDialogOpen, isRuleBuilderOpen, pendingChallengeLaunch, pendingConfirmation]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -265,6 +404,14 @@ function App() {
   const activeIssue = currentIssueIndex >= 0 ? validationIssues[currentIssueIndex] : null;
   const selectedRegexState = selectedRule ? getCustomRegexState(selectedRule) : { valid: true, error: "" };
   const ruleBuilderRegexState = ruleDraft && isCustomRegexMode(ruleDraft) ? getCustomRegexState(ruleDraft) : { valid: true, error: "" };
+  const isMissingToolValid = Boolean(
+    missingRuleDraft.column
+    && isMissingRuleValid(missingRuleDraft, columns, missingRuleDraft.column),
+  );
+  const missingToolState = {
+    valid: isMissingToolValid,
+    error: isMissingToolValid ? "" : "Choose another existing column for this condition.",
+  };
   const ruleBuilderTestResult = ruleDraft && ruleBuilderTestValue
     ? validateValue(ruleBuilderTestValue, ruleDraft)
     : null;
@@ -302,12 +449,18 @@ function App() {
   const fillMethods = fillDraft.column === ALL_ISSUE_COLUMNS
     ? getFillMethodsForType("").filter((method) => method.id === "custom")
     : getFillMethodsForType(fillColumnRule?.type ?? "Text");
+  const selectedFillMethod = fillMethods.find((method) => method.id === fillDraft.method) ?? null;
   const fillPreview = useMemo(() => {
     if (!isFillDialogOpen || !deferredFillDraft.column) return { valid: false, error: "Choose a column.", targetCount: 0, changeCount: 0, skippedCount: 0, examples: [], allocations: [] };
     if (deferredFillDraft.column === ALL_ISSUE_COLUMNS) {
       const columnOptions = fillIssueColumns.map((column) => {
         const rule = resolveColumnRule(columnRules[column] ?? createColumnRule("Text"), regexRuleLibrary);
-        return { column, isValid: (value) => validateValue(value, rule).valid };
+        return {
+          column,
+          isValid: (value) => validateValue(value, rule).valid,
+          isMissing: (value) => isMissingValue(value, rule),
+          isIgnoredMissing: (value, row) => isMissingValue(value, rule) && !getMissingIssue(row, column, rule),
+        };
       });
       return calculateMultiColumnCustomFill(rows, columnOptions, deferredFillDraft);
     }
@@ -316,13 +469,19 @@ function App() {
       ...deferredFillDraft,
       type: rule.type,
       isValid: (value) => validateValue(value, rule).valid,
+      isMissing: (value) => isMissingValue(value, rule),
+      isIgnoredMissing: (value, row) => isMissingValue(value, rule) && !getMissingIssue(row, deferredFillDraft.column, rule),
     });
   }, [columnRules, deferredFillDraft, fillIssueColumns, isFillDialogOpen, regexRuleLibrary, rows]);
   const isFillPreviewPending = deferredFillDraft !== fillDraft;
   const customFillWarning = useMemo(() => {
     if (!isFillDialogOpen || fillDraft.method !== "custom") return "";
-    if (isEmptyValue(fillDraft.customValue)) return "Empty replacements will still be reported as missing on the next scan.";
     const columnsToCheck = fillDraft.column === ALL_ISSUE_COLUMNS ? fillIssueColumns : [fillDraft.column];
+    const missingColumns = columnsToCheck.filter((column) => {
+      const rule = resolveColumnRule(columnRules[column] ?? createColumnRule("Text"), regexRuleLibrary);
+      return isMissingValue(fillDraft.customValue, rule);
+    });
+    if (missingColumns.length) return "This replacement is treated as missing by the current column rule.";
     const failingColumns = columnsToCheck.filter((column) => {
       const rule = resolveColumnRule(columnRules[column] ?? createColumnRule("Text"), regexRuleLibrary);
       return !validateValue(fillDraft.customValue, rule).valid;
@@ -339,7 +498,13 @@ function App() {
     }),
     [visibleColumnRules, visibleColumns],
   );
-  const canScan = visibleRows.length > 0 && invalidVisibleRegexColumns.length === 0;
+  const invalidVisibleMissingColumns = useMemo(
+    () => visibleColumns.filter((column) => !isMissingRuleValid(visibleColumnRules[column], columns, column)),
+    [columns, visibleColumnRules, visibleColumns],
+  );
+  const canScan = visibleRows.length > 0
+    && invalidVisibleRegexColumns.length === 0
+    && invalidVisibleMissingColumns.length === 0;
   const regexTestResult = selectedRule && isCustomRegexMode(selectedRule) && regexTestValue
     ? validateWithCustomRegex(regexTestValue, selectedRule.customPattern, selectedRule.matchMode)
     : null;
@@ -400,7 +565,50 @@ function App() {
     [categoryOptionsByColumn, columnRules, regexRuleLibrary, selectedColumn, showRowNumbers, visibleColumns],
   );
 
-  function loadData(nextRows, nextFileName) {
+  function createCurrentWorkspaceSnapshot() {
+    return {
+      version: 1,
+      rows,
+      columns,
+      visibleColumns,
+      columnRules,
+      fileName,
+      validationIssues,
+      lastScannedAt: lastScannedAt?.toISOString?.() ?? lastScannedAt ?? null,
+      hasUnscannedChanges,
+      showRowNumbers,
+      selectedColumn,
+      relationshipRules,
+      history,
+      capturedRecipeSteps,
+      challengeEvaluation,
+      challengeRevision: activeChallenge?.revision ?? null,
+    };
+  }
+
+  function restoreWorkspaceSnapshot(snapshot, challengeId = "") {
+    setRows(snapshot.rows ?? []);
+    setColumns(snapshot.columns ?? []);
+    setVisibleColumns(snapshot.visibleColumns ?? snapshot.columns ?? []);
+    setColumnRules(snapshot.columnRules ?? {});
+    setFileName(snapshot.fileName ?? "Restored workspace");
+    setValidationIssues(snapshot.validationIssues ?? []);
+    setLastScannedAt(snapshot.lastScannedAt ? new Date(snapshot.lastScannedAt) : null);
+    setHasUnscannedChanges(snapshot.hasUnscannedChanges ?? false);
+    setShowRowNumbers(snapshot.showRowNumbers ?? true);
+    setSelectedColumn(snapshot.selectedColumn ?? snapshot.columns?.[0] ?? "");
+    setRelationshipRules(snapshot.relationshipRules ?? []);
+    setHistory(snapshot.history ?? { past: [], future: [] });
+    setCapturedRecipeSteps(snapshot.capturedRecipeSteps ?? []);
+    setChallengeEvaluation(snapshot.challengeEvaluation ?? null);
+    setActiveChallengeId(challengeId);
+    setIsValidationPanelOpen(false);
+    setIsRelationshipPanelOpen(false);
+    setCurrentIssueIndex(-1);
+    setShowIssueRowsOnly(false);
+  }
+
+  function loadData(nextRows, nextFileName, options = {}) {
     const normalizedRows = nextRows.map((row) => normalizeRow(row));
     const nextColumns = collectColumns(normalizedRows);
     const inferredRules = Object.fromEntries(
@@ -426,6 +634,13 @@ function App() {
     setCapturedRecipeSteps([]);
     setShowIssueRowsOnly(false);
     setRecipePreview(null);
+    setActiveChallengeId(options.challengeId ?? "");
+    setChallengeEvaluation(null);
+    setIsChallengeResultOpen(false);
+    setIsObjectivesOpen(true);
+    setPendingChallengeLaunch(null);
+    setChallengeStoryPage(0);
+    setChallengeStoryCharacterCount(0);
   }
 
   async function loadSample() {
@@ -449,6 +664,145 @@ function App() {
     loadData(parsed.data, file.name);
   }
 
+  function requestChallengeStory(challengeId, restart = false) {
+    const challenge = getChallenge(challengeId);
+    if (!challenge?.story?.length) {
+      openChallenge(challengeId, restart);
+      return;
+    }
+    setPendingChallengeLaunch({ challengeId, restart });
+    setChallengeStoryPage(0);
+    setChallengeStoryCharacterCount(0);
+  }
+
+  function closeChallengeStory() {
+    setPendingChallengeLaunch(null);
+    setChallengeStoryPage(0);
+    setChallengeStoryCharacterCount(0);
+  }
+
+  function revealChallengeStoryPage() {
+    setChallengeStoryCharacterCount(challengeStoryText.length);
+  }
+
+  function showNextChallengeStoryPage() {
+    if (!storyChallenge || !isChallengeStoryPageComplete) return;
+    if (challengeStoryPage >= storyChallenge.story.length - 1) return;
+    setChallengeStoryCharacterCount(0);
+    setChallengeStoryPage((currentPage) => currentPage + 1);
+  }
+
+  async function beginPendingChallenge() {
+    const pendingLaunch = pendingChallengeLaunch;
+    if (!pendingLaunch || !isChallengeStoryPageComplete) return;
+    closeChallengeStory();
+    await openChallenge(pendingLaunch.challengeId, pendingLaunch.restart);
+  }
+
+  async function openChallenge(challengeId, restart = false) {
+    const challenge = getChallenge(challengeId);
+    if (!challenge) return;
+    setChallengeLoadError("");
+    setChallengeLoadingTitle(challenge.title);
+    setIsChallengeLoading(true);
+    try {
+      if (rows.length) {
+        const currentWorkspaceId = activeChallengeId ? `challenge:${activeChallengeId}` : "normal";
+        await saveWorkspace(currentWorkspaceId, createCurrentWorkspaceSnapshot()).catch(() => {});
+      }
+      const workspaceId = `challenge:${challengeId}`;
+      if (restart) await deleteWorkspace(workspaceId).catch(() => {});
+      let saved = restart ? null : await loadWorkspace(workspaceId).catch(() => null);
+      if (saved && !hasCurrentChallengeRevision(challenge, saved.challengeRevision)) {
+        await deleteWorkspace(workspaceId).catch(() => {});
+        saved = null;
+      }
+      if (saved) {
+        restoreWorkspaceSnapshot(saved, challengeId);
+      } else {
+        const challengeRows = await loadChallengeRows(challenge);
+        loadData(challengeRows, `Challenge ${challenge.number}: ${challenge.title}`, { challengeId });
+      }
+      setIsChallengeBrowserOpen(false);
+    } catch (error) {
+      setChallengeLoadError(error instanceof Error ? error.message : "The challenge could not be loaded");
+    } finally {
+      setIsChallengeLoading(false);
+    }
+  }
+
+  async function loadChallengeRows(challenge) {
+    if (challenge.createRows) return challenge.createRows();
+    if (!challenge.dataFile) throw new Error("This challenge has no dataset attached");
+    const response = await fetch(challenge.dataFile);
+    if (!response.ok) throw new Error(`The dataset download failed with status ${response.status}`);
+    const text = await response.text();
+    const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+    if (parsed.errors.length) throw new Error(`The dataset could not be read: ${parsed.errors[0].message}`);
+    if (parsed.data.length !== challenge.rowCount) {
+      throw new Error(`Expected ${challenge.rowCount.toLocaleString()} rows but found ${parsed.data.length.toLocaleString()}`);
+    }
+    return parsed.data;
+  }
+
+  async function exitChallenge() {
+    if (activeChallengeId && rows.length) {
+      await saveWorkspace(`challenge:${activeChallengeId}`, createCurrentWorkspaceSnapshot()).catch(() => {});
+    }
+    const normalWorkspace = await loadWorkspace("normal").catch(() => null);
+    if (normalWorkspace) restoreWorkspaceSnapshot(normalWorkspace, "");
+    else resetLoadedFileState();
+    setIsChallengeResultOpen(false);
+  }
+
+  function clearLoadedFile() {
+    if (!rows.length) return;
+    requestConfirmation({
+      title: "Clear loaded file?",
+      message: `Remove "${fileName}" and its autosaved workspace from this browser? Export the CSV first if you want to keep your changes.`,
+      confirmLabel: "Clear file",
+      tone: "danger",
+      onConfirm: performClearLoadedFile,
+    });
+  }
+
+  async function performClearLoadedFile() {
+    const workspaceId = activeChallengeId ? `challenge:${activeChallengeId}` : "normal";
+    await deleteWorkspace(workspaceId).catch(() => {});
+    resetLoadedFileState();
+  }
+
+  function resetLoadedFileState() {
+    setRows([]);
+    setColumns([]);
+    setVisibleColumns([]);
+    setColumnRules({});
+    setFileName("No file loaded");
+    setValidationIssues([]);
+    setLastScannedAt(null);
+    setHasUnscannedChanges(false);
+    setSelectedColumn("");
+    setIsValidationPanelOpen(false);
+    setCurrentIssueIndex(-1);
+    setNumericConversionNotice("");
+    setColumnRegexSummary(null);
+    setRelationshipIssues([]);
+    setSelectedRelationshipFixes([]);
+    setIsRelationshipPanelOpen(false);
+    setHistory({ past: [], future: [] });
+    setCapturedRecipeSteps([]);
+    setShowIssueRowsOnly(false);
+    setRecipePreview(null);
+    setActiveChallengeId("");
+    setChallengeEvaluation(null);
+    setIsChallengeResultOpen(false);
+    setIsObjectivesOpen(true);
+    setPendingChallengeLaunch(null);
+    setChallengeStoryPage(0);
+    setChallengeStoryCharacterCount(0);
+    setAutosaveStatus("Autosave ready");
+  }
+
   function handleCellValueChanged(event) {
     const updatedRows = [...rows];
     const rowIndex = event.node.rowIndex;
@@ -463,9 +817,12 @@ function App() {
   }
 
   function pushHistory(action) {
-    const nextAction = action.recipeStep
-      ? { ...action, captureId: action.captureId ?? crypto.randomUUID() }
-      : action;
+    const nextAction = {
+      ...action,
+      actionId: action.actionId ?? crypto.randomUUID(),
+      occurredAt: action.occurredAt ?? new Date().toISOString(),
+      ...(action.recipeStep ? { captureId: action.captureId ?? crypto.randomUUID() } : {}),
+    };
     if (nextAction.recipeStep) {
       setCapturedRecipeSteps((currentSteps) => [...currentSteps, { ...nextAction.recipeStep, captureId: nextAction.captureId }]);
     }
@@ -605,6 +962,11 @@ function App() {
   }
 
   function openCleaningTools(tool = "home") {
+    if (tool === "missingValues") {
+      const column = columns.includes(selectedColumn) ? selectedColumn : columns[0] ?? "";
+      setMissingRuleDraft(createMissingRuleDraft(column));
+      setMissingRuleNotice("");
+    }
     if (tool === "duplicates") {
       setDuplicateDraft((draft) => ({ ...draft, columns: draft.columns.filter((column) => columns.includes(column)).length ? draft.columns.filter((column) => columns.includes(column)) : [...visibleColumns] }));
     }
@@ -629,6 +991,54 @@ function App() {
     setRecipePreview(null);
     setActiveCleaningTool(tool);
     setIsCleaningToolsOpen(true);
+  }
+
+  function createMissingRuleDraft(column, rules = columnRules) {
+    if (!column) return EMPTY_MISSING_RULE_DRAFT;
+    const rule = normalizeMissingRule(rules[column] ?? createColumnRule("Text"));
+    return {
+      column,
+      missingPolicy: rule.missingPolicy,
+      missingTokens: [...rule.missingTokens],
+      missingTokensInput: rule.missingTokens.join(", "),
+      missingTokenCaseSensitive: rule.missingTokenCaseSensitive,
+      missingCondition: { ...rule.missingCondition },
+    };
+  }
+
+  function changeMissingRuleColumn(column) {
+    setMissingRuleDraft(createMissingRuleDraft(column));
+    setMissingRuleNotice("");
+  }
+
+  function updateMissingRuleDraft(field, value) {
+    setMissingRuleDraft((draft) => ({ ...draft, [field]: value }));
+    setMissingRuleNotice("");
+  }
+
+  function saveMissingRuleDraft() {
+    const column = missingRuleDraft.column;
+    if (!column || !isMissingRuleValid(missingRuleDraft, columns, column)) return;
+    const currentRule = columnRules[column] ?? createColumnRule("Text");
+    const normalizedRule = normalizeMissingRule({
+      ...currentRule,
+      missingPolicy: missingRuleDraft.missingPolicy,
+      missingTokens: missingRuleDraft.missingTokens,
+      missingTokenCaseSensitive: missingRuleDraft.missingTokenCaseSensitive,
+      missingCondition: missingRuleDraft.missingCondition,
+    });
+    const nextRules = { ...columnRules, [column]: normalizedRule };
+    pushHistory({
+      label: `Configure missing values for ${column}`,
+      kind: "config",
+      before: { columnRules, relationshipRules },
+      after: { columnRules: nextRules, relationshipRules },
+      audit: { type: "missingRule", column },
+    });
+    setColumnRules(nextRules);
+    setMissingRuleDraft(createMissingRuleDraft(column, nextRules));
+    setMissingRuleNotice(`Saved for ${column}. Scan again to update the issues.`);
+    clearDerivedResults();
   }
 
   function toggleToolColumn(setter, key, column) {
@@ -894,6 +1304,8 @@ function App() {
             column,
             type: rule.type,
             isValid: (value) => validateValue(value, rule).valid,
+            isMissing: (value) => isMissingValue(value, rule),
+            isIgnoredMissing: (value, row) => isMissingValue(value, rule) && !getMissingIssue(row, column, rule),
           }, true);
           if (!plan.valid) return { valid: false, error: `Fill ${column}: ${plan.error}` };
           if (plan.changes.length) {
@@ -1104,7 +1516,15 @@ function App() {
   }
 
   function handleExpectedTypeChange(column, nextType) {
-    setColumnRules({ ...columnRules, [column]: createColumnRule(nextType) });
+    const nextRules = { ...columnRules, [column]: createColumnRule(nextType) };
+    pushHistory({
+      label: `Set ${column} to ${nextType}`,
+      kind: "config",
+      before: { columnRules, relationshipRules },
+      after: { columnRules: nextRules, relationshipRules },
+      audit: { type: "columnType", column, nextType },
+    });
+    setColumnRules(nextRules);
     setEditingSavedRegexId("");
     setNumericConversionNotice("");
     setHasUnscannedChanges(true);
@@ -1123,6 +1543,8 @@ function App() {
       minValue: currentRule.minValue ?? "",
       maxValue: currentRule.maxValue ?? "",
       builder: currentRule.builder ?? DEFAULT_REGEX_BUILDER,
+      missingCondition: currentRule.missingCondition ?? DEFAULT_MISSING_CONDITION,
+      missingTokensInput: (currentRule.missingTokens ?? []).join(", "),
     });
     setAllowedValueInput("");
     setExistingCategoryValue("");
@@ -1189,7 +1611,16 @@ function App() {
   function saveRuleDraft() {
     if (!selectedColumn || !ruleDraft) return;
     if (isCustomRegexMode(ruleDraft) && !getCustomRegexState(ruleDraft).valid) return;
-    setColumnRules((currentRules) => ({ ...currentRules, [selectedColumn]: ruleDraft }));
+    const { missingTokensInput: _missingTokensInput, ...savedRule } = ruleDraft;
+    const nextRules = { ...columnRules, [selectedColumn]: normalizeMissingRule(savedRule) };
+    pushHistory({
+      label: `Configure ${selectedColumn}`,
+      kind: "config",
+      before: { columnRules, relationshipRules },
+      after: { columnRules: nextRules, relationshipRules },
+      audit: { type: "columnRule", column: selectedColumn },
+    });
+    setColumnRules(nextRules);
     setColumnRegexSummary(null);
     setHasUnscannedChanges(true);
     setIsRuleBuilderOpen(false);
@@ -1509,12 +1940,44 @@ function App() {
 
   function scanForIssues() {
     const nextIssues = validateRows(visibleRows, visibleColumnRules);
+    const scannedAt = new Date();
     setValidationIssues(nextIssues);
-    setLastScannedAt(new Date());
+    setLastScannedAt(scannedAt);
     setHasUnscannedChanges(false);
     setIsValidationPanelOpen(false);
     setCurrentIssueIndex(-1);
     if (!nextIssues.length) setShowIssueRowsOnly(false);
+    if (activeChallenge) {
+      const allRules = Object.fromEntries(columns.map((column) => [
+        column,
+        resolveColumnRule(columnRules[column] ?? createColumnRule("Text"), regexRuleLibrary),
+      ]));
+      const allRows = rows.map((row) => pickColumns(row, columns));
+      const allIssues = validateRows(allRows, allRules);
+      const evaluation = evaluateChallenge(activeChallenge, {
+        rows,
+        columnRules: allRules,
+        scanIssues: allIssues,
+        lastScannedAt: scannedAt,
+        history: history.past,
+      });
+      setChallengeEvaluation(evaluation);
+      setChallengeRecords((current) => {
+        const previous = hasCurrentChallengeRevision(activeChallenge, current[activeChallenge.id]?.revision)
+          ? current[activeChallenge.id]
+          : null;
+        return {
+          ...current,
+          [activeChallenge.id]: {
+            revision: activeChallenge.revision,
+            score: Math.max(previous?.score ?? 0, evaluation.score),
+            stars: Math.max(previous?.stars ?? 0, evaluation.stars),
+            complete: previous?.complete || evaluation.complete,
+          },
+        };
+      });
+      if (evaluation.complete) setIsChallengeResultOpen(true);
+    }
   }
 
   function deleteRowsWithValidationIssues() {
@@ -1562,14 +2025,26 @@ function App() {
   }
 
   function changeFillColumn(column) {
-    setFillDraft((currentDraft) => ({ ...currentDraft, column, method: "custom" }));
+    setFillDraft((currentDraft) => ({
+      ...currentDraft,
+      column,
+      method: "custom",
+      groupBy: "",
+      orderBy: "",
+      orderDirection: "asc",
+    }));
   }
 
   function buildCurrentFillPlan(collectChanges = false) {
     if (fillDraft.column === ALL_ISSUE_COLUMNS) {
       const columnOptions = fillIssueColumns.map((column) => {
         const rule = resolveColumnRule(columnRules[column] ?? createColumnRule("Text"), regexRuleLibrary);
-        return { column, isValid: (value) => validateValue(value, rule).valid };
+        return {
+          column,
+          isValid: (value) => validateValue(value, rule).valid,
+          isMissing: (value) => isMissingValue(value, rule),
+          isIgnoredMissing: (value, row) => isMissingValue(value, rule) && !getMissingIssue(row, column, rule),
+        };
       });
       return calculateMultiColumnCustomFill(rows, columnOptions, fillDraft, collectChanges);
     }
@@ -1578,6 +2053,8 @@ function App() {
       ...fillDraft,
       type: rule.type,
       isValid: (value) => validateValue(value, rule).valid,
+      isMissing: (value) => isMissingValue(value, rule),
+      isIgnoredMissing: (value, row) => isMissingValue(value, rule) && !getMissingIssue(row, fillDraft.column, rule),
     }, collectChanges);
   }
 
@@ -1596,6 +2073,9 @@ function App() {
         scope: fillDraft.scope,
         method: fillDraft.method,
         customValue: fillDraft.customValue,
+        groupBy: fillDraft.groupBy,
+        orderBy: fillDraft.orderBy,
+        orderDirection: fillDraft.orderDirection,
         rules: snapshotColumnRules(fillDraft.column === ALL_ISSUE_COLUMNS ? fillIssueColumns : [fillDraft.column]),
       },
     });
@@ -1718,6 +2198,11 @@ function App() {
     downloadCsv(csv, "cleansheet_validation_issues.csv");
   }
 
+  function exportCleaningLog() {
+    const logRows = history.past.map((action, index) => summarizeHistoryAction(action, index));
+    downloadCsv(Papa.unparse(logRows), "cleansheet_cleaning_log.csv");
+  }
+
   function downloadCsv(csv, outputFileName) {
     downloadText(csv, outputFileName, "text/csv;charset=utf-8");
   }
@@ -1756,13 +2241,111 @@ function App() {
   function renderCleaningToolContent() {
     if (activeCleaningTool === "home") {
       return (
-        <div className="cleaning-tool-grid">
-          <ToolCard title="Find & Replace" description="Replace matching values across visible columns" onClick={() => setActiveCleaningTool("findReplace")} disabled={!visibleColumns.length} />
-          <ToolCard title="Duplicates" description="Find repeated rows using the columns you choose" onClick={() => openCleaningTools("duplicates")} disabled={!columns.length} />
-          <ToolCard title="Text Cleanup" description="Fix spacing and capitalization in bulk" onClick={() => openCleaningTools("textCleanup")} disabled={!columns.length} />
-          <ToolCard title="Split / Combine" description="Create columns by separating or joining values" onClick={() => openCleaningTools("splitCombine")} disabled={!columns.length} />
-          <ToolCard title="Recipes (WIP use with care)" description="Stores actions made automatically, reuse it on another CSV" onClick={() => setActiveCleaningTool("recipes")} />
+        <div className="cleaning-tool-home">
+          <div className="cleaning-tool-grid">
+            <ToolCard title="Find & Replace" description="Replace matching values across visible columns" onClick={() => setActiveCleaningTool("findReplace")} disabled={!visibleColumns.length} />
+            <ToolCard title="Missing Values" description="Decide when blanks and markers like N/A count as problems" onClick={() => openCleaningTools("missingValues")} disabled={!columns.length} />
+            <ToolCard title="Duplicates" description="Find repeated rows using the columns you choose" onClick={() => openCleaningTools("duplicates")} disabled={!columns.length} />
+            <ToolCard title="Text Cleanup" description="Fix spacing and capitalization in bulk" onClick={() => openCleaningTools("textCleanup")} disabled={!columns.length} />
+            <ToolCard title="Split / Combine" description="Create columns by separating or joining values" onClick={() => openCleaningTools("splitCombine")} disabled={!columns.length} />
+            <ToolCard title="Recipes (WIP use with care)" description="Stores actions made automatically, reuse it on another CSV" onClick={() => setActiveCleaningTool("recipes")} />
+          </div>
+          <div className="cleaning-log-export">
+            <div><strong>Cleaning log</strong><span>{history.past.length.toLocaleString()} applied action{history.past.length === 1 ? "" : "s"} in this workspace</span></div>
+            <button type="button" className="secondary-button" onClick={exportCleaningLog} disabled={!history.past.length}>Export CSV</button>
+          </div>
         </div>
+      );
+    }
+
+    if (activeCleaningTool === "missingValues") {
+      const condition = missingRuleDraft.missingCondition ?? DEFAULT_MISSING_CONDITION;
+      return (
+        <>
+          <div className="cleaning-tool-body">
+            <label>
+              <span>Column</span>
+              <select value={missingRuleDraft.column} onChange={(event) => changeMissingRuleColumn(event.target.value)}>
+                {columns.map((column) => <option key={column} value={column}>{column}</option>)}
+              </select>
+            </label>
+            <section className="missing-rule-card">
+              <div>
+                <span className="field-label">Missing values</span>
+                <p>Choose when an empty cell or null marker should count as a problem.</p>
+              </div>
+              <label>
+                <span>Policy</span>
+                <select value={missingRuleDraft.missingPolicy} onChange={(event) => updateMissingRuleDraft("missingPolicy", event.target.value)}>
+                  <option value="required">Required</option>
+                  <option value="allowed">Allowed</option>
+                  <option value="conditional">Required when...</option>
+                </select>
+              </label>
+              {missingRuleDraft.missingPolicy === "conditional" && (
+                <div className="missing-condition-grid">
+                  <label>
+                    <span>Other column</span>
+                    <select
+                      value={condition.column}
+                      onChange={(event) => updateMissingRuleDraft("missingCondition", { ...condition, column: event.target.value })}
+                    >
+                      <option value="">Choose a column</option>
+                      {columns.filter((column) => column !== missingRuleDraft.column).map((column) => <option key={column} value={column}>{column}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Condition</span>
+                    <select
+                      value={condition.operator}
+                      onChange={(event) => updateMissingRuleDraft("missingCondition", { ...condition, operator: event.target.value })}
+                    >
+                      <option value="equals">Equals</option>
+                      <option value="notEquals">Does not equal</option>
+                      <option value="isEmpty">Is empty</option>
+                      <option value="isNotEmpty">Is not empty</option>
+                    </select>
+                  </label>
+                  {!["isEmpty", "isNotEmpty"].includes(condition.operator) && (
+                    <label>
+                      <span>Value</span>
+                      <input
+                        value={condition.value}
+                        onChange={(event) => updateMissingRuleDraft("missingCondition", { ...condition, value: event.target.value })}
+                        placeholder="Active"
+                      />
+                    </label>
+                  )}
+                </div>
+              )}
+              <label>
+                <span>Also treat these as missing</span>
+                <input
+                  value={missingRuleDraft.missingTokensInput}
+                  onChange={(event) => {
+                    const missingTokensInput = event.target.value;
+                    setMissingRuleDraft((draft) => ({ ...draft, missingTokensInput, missingTokens: parseMissingTokens(missingTokensInput) }));
+                    setMissingRuleNotice("");
+                  }}
+                  placeholder="NULL, N/A, ?, -"
+                />
+              </label>
+              <ToolCheck
+                checked={missingRuleDraft.missingTokenCaseSensitive}
+                onChange={() => updateMissingRuleDraft("missingTokenCaseSensitive", !missingRuleDraft.missingTokenCaseSensitive)}
+                label="Null markers are case-sensitive"
+              />
+              {!missingToolState.valid && <div className="regex-state error">{missingToolState.error}</div>}
+            </section>
+            {missingRuleNotice && <div className="tool-message">{missingRuleNotice}</div>}
+          </div>
+          <ToolActions
+            onCancel={() => { setActiveCleaningTool("home"); setMissingRuleNotice(""); }}
+            onApply={saveMissingRuleDraft}
+            applyLabel="Save settings"
+            disabled={!missingToolState.valid}
+          />
+        </>
       );
     }
 
@@ -1942,6 +2525,10 @@ function App() {
             <input type="file" accept=".csv" onChange={handleFileUpload} />
           </label>
           <span className="file-name">{fileName}</span>
+          <button type="button" className="challenge-launch-button" onClick={() => setIsChallengeBrowserOpen(true)}>
+            <span>Cleaning Challenges</span>
+            <small>{CHALLENGES.length} datasets waiting</small>
+          </button>
         </section>
 
         <section className="control-section">
@@ -1997,6 +2584,11 @@ function App() {
             ))}
           </div>
         </section>
+        <section className="sidebar-clear-section">
+          <button type="button" className="sidebar-clear-file" onClick={clearLoadedFile} disabled={!rows.length}>
+            Clear loaded file
+          </button>
+        </section>
       </aside>
 
       <section className="workspace">
@@ -2005,7 +2597,7 @@ function App() {
             <div>
               <h1>{fileName}</h1>
               <p>Double click cells to edit. Select a column to change its type and format.</p>
-              <p className="unsaved-changes-warning">The app doesn't save changes. Refreshing the page will discard all changes (Use Export) (:</p>
+              <p className="autosave-message">{autosaveStatus}. Export CSV when you want a file you can move elsewhere.</p>
             </div>
             <div className="workspace-actions">
               <button type="button" onClick={scanForIssues} disabled={!canScan}>
@@ -2028,6 +2620,73 @@ function App() {
               {lastScannedAt ? ` • ${lastScannedAt.toLocaleTimeString()}` : ""}
             </div>
           </div>
+
+          {activeChallenge && (
+            <section className={`challenge-objectives ${isObjectivesOpen ? "open" : ""}`}>
+              <div className="challenge-objectives-heading">
+                <button type="button" className="challenge-objectives-toggle" onClick={() => setIsObjectivesOpen((open) => !open)}>
+                  <span className="challenge-number">Challenge {activeChallenge.number}</span>
+                  <span>
+                    <strong>{activeChallenge.title}</strong>
+                    <small>{challengeEvaluation ? `${challengeEvaluation.completedCount}/${challengeEvaluation.totalCount} objectives` : "Scan to check your work"}</small>
+                  </span>
+                  <span className="challenge-stars" aria-label={`${challengeEvaluation?.stars ?? 0} stars`}>
+                    {[1, 2, 3].map((star) => <span key={star} className={star <= (challengeEvaluation?.stars ?? 0) ? "earned" : ""}>*</span>)}
+                  </span>
+                  <span>{isObjectivesOpen ? "Hide" : "Show"}</span>
+                </button>
+                <button type="button" className="challenge-exit-button" onClick={exitChallenge}>Exit challenge</button>
+              </div>
+              {isObjectivesOpen && (
+                <div className="challenge-objectives-body">
+                  <p>{activeChallenge.subtitle}</p>
+                  <div className="challenge-objective-list">
+                    {activeChallenge.objectives.map((objective) => {
+                      const result = challengeEvaluation?.objectives.find((item) => item.id === objective.id);
+                      return (
+                        <div key={objective.id} className={result?.complete ? "complete" : ""}>
+                          <span className="objective-check">{result?.complete ? "OK" : "??"}</span>
+                          <span><strong>{objective.title}</strong><small>{result?.detail ?? "Not checked yet"}</small></span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {!!activeChallenge.rules?.length && (
+                    <div className="challenge-rules">
+                      <span className="field-label">Challenge rules</span>
+                      <div className="challenge-rule-list">
+                        {activeChallenge.rules.map((rule) => {
+                          const result = challengeEvaluation?.rules?.find((item) => item.id === rule.id);
+                          return (
+                            <div key={rule.id} className={result?.complete ? "complete" : ""}>
+                              <span className="objective-check">{result?.complete ? "OK" : "??"}</span>
+                              <span><strong>{rule.title}</strong><small>{result?.detail ?? "Scan to check this rule"}</small></span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  <details className="challenge-hints">
+                    <summary>Hints are free. Pride is expensive.</summary>
+                    {activeChallenge.hints.map((hint) => <p key={hint}>{hint}</p>)}
+                  </details>
+                  {activeChallenge.credit && (
+                    <div className="challenge-credit">
+                      <span className="field-label">Dataset credit</span>
+                      <p><strong>{activeChallenge.credit.dataset}</strong> by {activeChallenge.credit.creator} via {activeChallenge.credit.source}</p>
+                      <div>
+                        <a href={activeChallenge.credit.sourceUrl} target="_blank" rel="noreferrer">Source</a>
+                        <a href={activeChallenge.credit.licenseUrl} target="_blank" rel="noreferrer">CC BY 4.0 license</a>
+                        <a href={activeChallenge.credit.doiUrl} target="_blank" rel="noreferrer">DOI</a>
+                      </div>
+                      <small>{activeChallenge.credit.changes}</small>
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
 
           <section className="information-panel">
             <button
@@ -2242,9 +2901,6 @@ function App() {
                       Showing all {validationIssues.length.toLocaleString()} validation issues across {visibleColumns.length.toLocaleString()} visible columns.
                     </span>
                     <div className="issue-buttons">
-                      <button type="button" onClick={() => openFillDialog(selectedColumn)}>
-                        Fill invalid values
-                      </button>
                       <button type="button" className="secondary-button" onClick={exportIssuesCsv}>
                         Export Issues CSV
                       </button>
@@ -2296,6 +2952,7 @@ function App() {
               </div>
               <div className="issue-jump-actions">
                 <button type="button" className="secondary-button" onClick={() => openCleaningTools("home")}>Cleaning Tools{capturedRecipeSteps.length ? ` (${capturedRecipeSteps.length})` : ""}</button>
+                <button type="button" onClick={() => openFillDialog(selectedColumn)} disabled={!validationIssues.length || hasUnscannedChanges}>Fill invalid values</button>
                 <button type="button" className="secondary-button" onClick={undo} disabled={!history.past.length}>Undo</button>
                 <button type="button" className="secondary-button" onClick={redo} disabled={!history.future.length}>Redo</button>
                 <button type="button" className={`secondary-button ${showIssueRowsOnly ? "active-view-button" : ""}`} onClick={() => setShowIssueRowsOnly((current) => !current)} disabled={!validationIssues.length || hasUnscannedChanges}>
@@ -2400,6 +3057,11 @@ function App() {
                 Fix invalid custom regex rules before scanning visible columns.
               </div>
             )}
+            {!!invalidVisibleMissingColumns.length && (
+              <div className="regex-blocker">
+                Finish the conditional missing-value rules before scanning visible columns.
+              </div>
+            )}
           </>
         ) : (
           <div className="empty-state">
@@ -2408,6 +3070,134 @@ function App() {
           </div>
         )}
       </aside>
+      {isChallengeBrowserOpen && (
+        <div className="challenge-browser-backdrop" onMouseDown={() => setIsChallengeBrowserOpen(false)}>
+          <section className="challenge-browser" role="dialog" aria-modal="true" aria-labelledby="challenge-browser-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="challenge-browser-heading">
+              <div>
+                <span className="section-label">Clean something terrible</span>
+                <h2 id="challenge-browser-title">Cleaning Challenges</h2>
+                <p>{CHALLENGES.length} datasets and increasingly questionable decisions, your tools work exactly like they do in the normal app</p>
+              </div>
+              <button type="button" className="dialog-close" onClick={() => setIsChallengeBrowserOpen(false)}>Close</button>
+            </div>
+            <div className="challenge-card-grid">
+              {CHALLENGES.map((challenge) => {
+                const savedRecord = challengeRecords[challenge.id];
+                const record = hasCurrentChallengeRevision(challenge, savedRecord?.revision) ? savedRecord : null;
+                const hasSavedWorkspace = savedWorkspaceIds.includes(`challenge:${challenge.id}`);
+                return (
+                  <article className={`challenge-card ${challenge.accent}`} key={challenge.id}>
+                    <div className="challenge-card-topline">
+                      <span>#{challenge.number}</span>
+                      <span>{challenge.difficulty}</span>
+                    </div>
+                    <h3>{challenge.title}</h3>
+                    <p>{challenge.subtitle}</p>
+                    <div className="challenge-card-stats">
+                      <span>{challenge.rowCount.toLocaleString()} rows</span>
+                      <span>{challenge.objectives.length} objectives</span>
+                      {record?.stars ? <span>{record.stars}/3 stars</span> : <span>Unplayed</span>}
+                    </div>
+                    <div className="challenge-card-actions">
+                      <button type="button" onClick={() => hasSavedWorkspace ? openChallenge(challenge.id) : requestChallengeStory(challenge.id)}>{hasSavedWorkspace ? "Continue" : "Start"}</button>
+                      {hasSavedWorkspace && <button type="button" className="secondary-button" onClick={() => requestChallengeStory(challenge.id, true)}>Restart</button>}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        </div>
+      )}
+      {pendingChallengeLaunch && storyChallenge && (
+        <div className="challenge-story-backdrop" onMouseDown={closeChallengeStory}>
+          <section className={`challenge-story-dialog ${storyChallenge.accent}`} role="dialog" aria-modal="true" aria-labelledby="challenge-story-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="challenge-story-heading">
+              <div>
+                <span className="section-label">Challenge {storyChallenge.number} briefing</span>
+                <h2 id="challenge-story-title">{storyChallenge.title}</h2>
+              </div>
+              <button type="button" className="dialog-close" onClick={closeChallengeStory}>Back</button>
+            </div>
+
+            <div className="challenge-story-progress" aria-label={`Story page ${challengeStoryPage + 1} of ${storyChallenge.story.length}`}>
+              {storyChallenge.story.map((page, index) => (
+                <span key={page} className={index < challengeStoryPage ? "complete" : index === challengeStoryPage ? "active" : ""}>{index + 1}</span>
+              ))}
+            </div>
+
+            <div
+              className={`challenge-story-textbox ${isChallengeStoryPageComplete ? "complete" : "typing"}`}
+              role="button"
+              tabIndex={0}
+              aria-describedby="challenge-story-full-text"
+              onClick={() => {
+                if (!isChallengeStoryPageComplete) revealChallengeStoryPage();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !isChallengeStoryPageComplete) revealChallengeStoryPage();
+              }}
+            >
+              <span className="challenge-story-label">Incident report</span>
+              <p id="challenge-story-full-text" className="screen-reader-only">{challengeStoryText}</p>
+              <p className="challenge-story-visible-text" aria-hidden="true">
+                {challengeStoryText.slice(0, challengeStoryCharacterCount)}
+                {!isChallengeStoryPageComplete && <span className="challenge-story-cursor" />}
+              </p>
+              <small>{isChallengeStoryPageComplete ? "Page ready" : "Click or press Space to reveal the page"}</small>
+            </div>
+
+            <div className="challenge-story-actions">
+              <button type="button" className="secondary-button" onClick={closeChallengeStory}>Back</button>
+              {challengeStoryPage < storyChallenge.story.length - 1 ? (
+                <button type="button" onClick={showNextChallengeStoryPage} disabled={!isChallengeStoryPageComplete}>Next</button>
+              ) : (
+                <button type="button" onClick={beginPendingChallenge} disabled={!isChallengeStoryPageComplete}>
+                  {pendingChallengeLaunch.restart ? "Restart challenge" : "Begin challenge"}
+                </button>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+      {isChallengeResultOpen && activeChallenge && challengeEvaluation && (
+        <div className="challenge-result-backdrop" onMouseDown={() => setIsChallengeResultOpen(false)}>
+          <section className="challenge-result" role="dialog" aria-modal="true" aria-labelledby="challenge-result-title" onMouseDown={(event) => event.stopPropagation()}>
+            <span className="section-label">Dataset cleaned</span>
+            <h2 id="challenge-result-title">{activeChallenge.title} survived you</h2>
+            <div className="challenge-result-stars" aria-label={`${challengeEvaluation.stars} stars`}>{"*".repeat(challengeEvaluation.stars)}{"o".repeat(3 - challengeEvaluation.stars)}</div>
+            <p>{challengeEvaluation.score}% complete in {challengeEvaluation.moves} recorded move{challengeEvaluation.moves === 1 ? "" : "s"}</p>
+            <div className="challenge-result-actions">
+              <button type="button" className="secondary-button" onClick={() => setIsChallengeResultOpen(false)}>Keep cleaning</button>
+              <button type="button" onClick={() => {
+                setIsChallengeResultOpen(false);
+                setIsChallengeBrowserOpen(true);
+              }}>Choose another mess</button>
+            </div>
+          </section>
+        </div>
+      )}
+      {isChallengeLoading && (
+        <div className="challenge-load-backdrop">
+          <section className="challenge-load-dialog" role="status" aria-live="polite">
+            <span className="challenge-load-spinner" aria-hidden="true" />
+            <span className="section-label">Opening challenge</span>
+            <h2>{challengeLoadingTitle}</h2>
+            <p>The big datasets need a moment</p>
+          </section>
+        </div>
+      )}
+      {!!challengeLoadError && !isChallengeLoading && (
+        <div className="challenge-load-backdrop" onMouseDown={() => setChallengeLoadError("")}>
+          <section className="challenge-load-dialog error" role="alertdialog" aria-modal="true" aria-labelledby="challenge-load-error-title" onMouseDown={(event) => event.stopPropagation()}>
+            <span className="section-label">Challenge refused to wake up</span>
+            <h2 id="challenge-load-error-title">Could not load the dataset</h2>
+            <p>{challengeLoadError}</p>
+            <button type="button" onClick={() => setChallengeLoadError("")}>Back to challenges</button>
+          </section>
+        </div>
+      )}
       {isCleaningToolsOpen && renderCleaningTools()}
       {isFillDialogOpen && (
         <div className="rule-builder-backdrop" onMouseDown={() => setIsFillDialogOpen(false)}>
@@ -2465,6 +3255,39 @@ function App() {
                   <span>Replacement value</span>
                   <input value={fillDraft.customValue} onChange={(event) => setFillDraft((draft) => ({ ...draft, customValue: event.target.value }))} placeholder="NaN or leave empty" />
                 </label>
+              )}
+              {selectedFillMethod?.supportsGrouping && (
+                <label className="fill-field">
+                  <span>Calculate within groups (optional)</span>
+                  <select value={fillDraft.groupBy} onChange={(event) => setFillDraft((draft) => ({ ...draft, groupBy: event.target.value }))}>
+                    <option value="">Use the whole column</option>
+                    {columns.filter((column) => column !== fillDraft.column).map((column) => <option key={column} value={column}>{column}</option>)}
+                  </select>
+                </label>
+              )}
+              {selectedFillMethod?.requiresOrder && (
+                <div className="fill-order-fields">
+                  <label className="fill-field">
+                    <span>Order by</span>
+                    <select value={fillDraft.orderBy} onChange={(event) => setFillDraft((draft) => ({ ...draft, orderBy: event.target.value }))}>
+                      <option value="">Choose a column</option>
+                      {columns.filter((column) => column !== fillDraft.column).map((column) => <option key={column} value={column}>{column}</option>)}
+                    </select>
+                  </label>
+                  <label className="fill-field">
+                    <span>Direction</span>
+                    <select value={fillDraft.orderDirection} onChange={(event) => setFillDraft((draft) => ({ ...draft, orderDirection: event.target.value }))}>
+                      <option value="asc">Smallest / earliest first</option>
+                      <option value="desc">Largest / latest first</option>
+                    </select>
+                  </label>
+                </div>
+              )}
+              {selectedFillMethod?.warning && (
+                <div className="fill-method-caution">
+                  <strong>Simulation only</strong>
+                  <span>This keeps the column proportions, but the value assigned to each row is invented.</span>
+                </div>
               )}
               {customFillWarning && <div className="fill-warning">{customFillWarning}</div>}
 
@@ -2810,6 +3633,7 @@ function getCleaningToolTitle(tool) {
   return ({
     home: "Cleaning Tools",
     findReplace: "Find & Replace",
+    missingValues: "Missing Values",
     duplicates: "Find Duplicates",
     textCleanup: "Text Cleanup",
     splitCombine: "Split / Combine Columns",
@@ -2821,6 +3645,7 @@ function getCleaningToolDescription(tool, visibleColumnCount) {
   return ({
     home: "Choose an action. Every data change includes a preview and Undo support",
     findReplace: `Applies across all visible columns, hidden columns are unchanged`,
+    missingValues: "Choose how blanks and null markers should behave in each column",
     duplicates: "Compare selected columns",
     textCleanup: "Fix extra spaces or change how text is capitalized",
     splitCombine: "Split or combine columns",
@@ -2881,6 +3706,41 @@ const DateCellEditor = forwardRef(function DateCellEditor(props, ref) {
     />
   );
 });
+
+function summarizeHistoryAction(action, index) {
+  const counts = countHistoryChanges(action);
+  const step = action.recipeStep ?? action.audit ?? {};
+  const columns = new Set([
+    ...(step.columns ?? []),
+    ...(step.column ? [step.column] : []),
+    ...(action.changes ?? []).map((change) => change.column),
+  ]);
+  const method = step.type === "fill"
+    ? `${step.method ?? "fill"}${step.groupBy ? ` by ${step.groupBy}` : ""}${step.orderBy ? ` ordered by ${step.orderBy}` : ""}`
+    : step.type ?? action.kind;
+  return {
+    Step: index + 1,
+    Time: action.occurredAt ?? "",
+    Action: action.label ?? action.kind,
+    Method: method,
+    Columns: [...columns].join(", "),
+    "Cells changed": counts.cells,
+    "Rows deleted": counts.rows,
+  };
+}
+
+function countHistoryChanges(action) {
+  if (action.kind === "compound") {
+    return (action.actions ?? []).reduce((total, child) => {
+      const childCounts = countHistoryChanges(child);
+      return { cells: total.cells + childCounts.cells, rows: total.rows + childCounts.rows };
+    }, { cells: 0, rows: 0 });
+  }
+  return {
+    cells: action.changes?.length ?? 0,
+    rows: action.kind === "deleteRows" ? action.rows?.length ?? 0 : 0,
+  };
+}
 
 function normalizeRow(row) {
   const normalized = {};
@@ -3096,6 +3956,15 @@ function readSavedRelationships() {
   }
 }
 
+function readChallengeRecords() {
+  try {
+    const records = JSON.parse(window.localStorage.getItem("cleansheet.challenge-records") ?? "{}");
+    return records && typeof records === "object" && !Array.isArray(records) ? records : {};
+  } catch {
+    return {};
+  }
+}
+
 function validateRelationshipRule(rule, columns) {
   if (!rule.targetColumn) return { valid: false, error: "Choose a target column." };
   if (!columns.includes(rule.targetColumn)) return { valid: false, error: `Target column “${rule.targetColumn}” is not in this file.` };
@@ -3304,16 +4173,17 @@ function checkRelationshipRows(rows, rule, ast, columnRules) {
 }
 
 function resolveColumnRule(rule, regexRules) {
-  if (!isCustomRegexMode(rule) || !rule.savedRegexId) return rule;
-  const savedRule = regexRules.find((item) => item.id === rule.savedRegexId);
-  if (!savedRule) return rule;
-  return {
-    ...rule,
+  const normalizedRule = normalizeMissingRule(rule);
+  if (!isCustomRegexMode(normalizedRule) || !normalizedRule.savedRegexId) return normalizedRule;
+  const savedRule = regexRules.find((item) => item.id === normalizedRule.savedRegexId);
+  if (!savedRule) return normalizedRule;
+  return normalizeMissingRule({
+    ...normalizedRule,
     customPattern: savedRule.pattern,
     customPatternLabel: savedRule.label,
     matchMode: savedRule.matchMode ?? "full",
     builder: savedRule.builder ?? null,
-  };
+  });
 }
 
 function escapeRegexLiteral(value) {
@@ -3406,14 +4276,14 @@ function inferColumnType(rows, column) {
 }
 
 function createColumnRule(type) {
-  return {
+  return normalizeMissingRule({
     type,
     presetId: DEFAULT_PRESET_BY_TYPE[type] ?? DEFAULT_PRESET_BY_TYPE.Text,
     mode: "preset",
     customPattern: "",
     customPatternLabel: "",
     savedRegexId: "",
-  };
+  });
 }
 
 function getPresetsForType(type) {
@@ -3430,15 +4300,18 @@ function validateRows(rows, columnRules) {
     for (const [column, rule] of Object.entries(columnRules)) {
       if (column === "__rowId") continue;
       const value = row[column];
-      if (isEmptyValue(value)) {
-        issues.push({
-          row: rowIndex + 1,
-          rowId: row.__rowId,
-          column,
-          expected: `${rule.type}: ${getRuleDisplayName(rule)}`,
-          value: "",
-          reason: "Value is empty",
-        });
+      if (isMissingValue(value, rule)) {
+        const missingIssue = getMissingIssue(row, column, rule);
+        if (missingIssue) {
+          issues.push({
+            row: rowIndex + 1,
+            rowId: row.__rowId,
+            column,
+            expected: `${rule.type}: ${getRuleDisplayName(rule)}`,
+            value: missingIssue.value,
+            reason: missingIssue.reason,
+          });
+        }
         continue;
       }
       const result = validateValue(value, rule);
@@ -3514,9 +4387,13 @@ function getRegexColumnSummary(rows, column, rule) {
   const examples = [];
   for (const row of rows) {
     const value = row[column];
-    if (isEmptyValue(value)) {
-      failCount += 1;
-      if (examples.length < 5) examples.push("(empty)");
+    if (isMissingValue(value, rule)) {
+      if (getMissingIssue(row, column, rule)) {
+        failCount += 1;
+        if (examples.length < 5) examples.push(String(value ?? "").trim() || "(empty)");
+      } else {
+        passCount += 1;
+      }
       continue;
     }
     if (validateValue(value, rule).valid) {

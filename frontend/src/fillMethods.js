@@ -2,12 +2,12 @@ export const ALL_ISSUE_COLUMNS = "__all_issue_columns__";
 
 export const FILL_METHODS = [
   { id: "custom", label: "Custom value", description: "Replace every target with text you enter." },
-  { id: "mode", label: "Most common value", description: "Use the valid value that appears most often.", types: ["Text", "Category", "Boolean"] },
-  { id: "median", label: "Median", description: "Use the middle valid numeric value.", types: ["Number", "Integer"] },
-  { id: "average", label: "Average", description: "Use the average of all valid numeric values.", types: ["Number", "Integer"] },
-  { id: "previous", label: "Previous valid value", description: "Copy the nearest valid value above it." },
-  { id: "next", label: "Next valid value", description: "Copy the nearest valid value below it." },
-  { id: "distribution", label: "Current distribution", description: "Preserve the proportions of valid category values.", types: ["Category"] },
+  { id: "mode", label: "Most common value", description: "Use the most common valid value, optionally within groups.", types: ["Text", "Category", "Boolean"], supportsGrouping: true },
+  { id: "median", label: "Median", description: "Use the middle valid number, optionally within groups.", types: ["Number", "Integer"], supportsGrouping: true },
+  { id: "average", label: "Average", description: "Use the average valid number, optionally within groups.", types: ["Number", "Integer"], supportsGrouping: true },
+  { id: "previous", label: "Previous valid value", description: "Copy the previous value using an order column.", supportsGrouping: true, requiresOrder: true },
+  { id: "next", label: "Next valid value", description: "Copy the next value using an order column.", supportsGrouping: true, requiresOrder: true },
+  { id: "distribution", label: "Current distribution", description: "Simulation only: preserve proportions, not row-level truth.", types: ["Category"], warning: true },
 ];
 
 export function getFillMethodsForType(type) {
@@ -15,13 +15,25 @@ export function getFillMethodsForType(type) {
 }
 
 export function calculateColumnFill(rows, options, collectChanges = false) {
-  const { column, customValue = "", isValid, method, scope = "both", type } = options;
+  const {
+    column,
+    customValue = "",
+    isValid,
+    isMissing,
+    isIgnoredMissing,
+    method,
+    scope = "both",
+    type,
+    groupBy = "",
+    orderBy = "",
+    orderDirection = "asc",
+  } = options;
   const methodDefinition = FILL_METHODS.find((item) => item.id === method);
   if (!methodDefinition || (methodDefinition.types && !methodDefinition.types.includes(type))) {
     return emptyResult("This filling method is not available for the selected column type.");
   }
 
-  const stateAt = (index) => createCellState(rows[index], index, column, isValid);
+  const stateAt = (index) => createCellState(rows[index], index, column, isValid, isMissing, isIgnoredMissing);
   let targetCount = 0;
   for (let index = 0; index < rows.length; index += 1) {
     if (isTarget(stateAt(index), scope)) targetCount += 1;
@@ -29,32 +41,32 @@ export function calculateColumnFill(rows, options, collectChanges = false) {
   if (!targetCount) return emptyResult("No cells match the selected target.");
 
   const result = createResult(targetCount, collectChanges);
-  if (method === "previous") {
-    let previousValue;
-    for (let index = 0; index < rows.length; index += 1) {
-      const state = stateAt(index);
-      if (state.valid) previousValue = state.value;
-      if (isTarget(state, scope)) recordReplacement(result, state, previousValue);
+  if (methodDefinition.requiresOrder) {
+    if (!orderBy) return emptyResult("Choose an order column for previous or next filling.", targetCount);
+    for (const indexes of groupIndexes(rows, groupBy).values()) {
+      const sorted = [...indexes].sort((left, right) => compareOrderValues(rows[left]?.[orderBy], rows[right]?.[orderBy], left, right));
+      if (orderDirection === "desc") sorted.reverse();
+      const traversal = method === "next" ? [...sorted].reverse() : sorted;
+      let neighborValue;
+      for (const index of traversal) {
+        const state = stateAt(index);
+        if (state.valid) neighborValue = state.value;
+        if (isTarget(state, scope)) recordReplacement(result, state, neighborValue);
+      }
     }
-    return finishResult(result, "No previous valid value was available for these cells.");
-  }
-
-  if (method === "next") {
-    let nextValue;
-    for (let index = rows.length - 1; index >= 0; index -= 1) {
-      const state = stateAt(index);
-      if (state.valid) nextValue = state.value;
-      if (isTarget(state, scope)) recordReplacement(result, state, nextValue);
-    }
-    result.examples.sort((a, b) => a.row - b.row);
-    return finishResult(result, "No next valid value was available for these cells.");
+    return finishResult(result, `No ${method} valid value was available for these cells.`);
   }
 
   const validValues = [];
+  const validValuesByGroup = new Map();
   if (method !== "custom") {
     for (let index = 0; index < rows.length; index += 1) {
       const state = stateAt(index);
-      if (state.valid) validValues.push(state.value);
+      if (!state.valid) continue;
+      validValues.push(state.value);
+      const key = groupKey(rows[index], groupBy);
+      if (!validValuesByGroup.has(key)) validValuesByGroup.set(key, []);
+      validValuesByGroup.get(key).push(state.value);
     }
   }
   if (method !== "custom" && !validValues.length) {
@@ -74,20 +86,25 @@ export function calculateColumnFill(rows, options, collectChanges = false) {
     return finishResult(result);
   }
 
-  let replacement = customValue;
-  if (method === "mode") replacement = mostCommonValue(validValues);
-  if (method === "median" || method === "average") {
-    const numericValues = validValues.map(parseNumericValue).filter((value) => value !== null);
-    if (!numericValues.length) return emptyResult("This column needs at least one valid numeric source value.", targetCount);
-    const statistic = method === "median" ? median(numericValues) : numericValues.reduce((sum, value) => sum + value, 0) / numericValues.length;
-    replacement = formatStatistic(statistic, type);
-  }
-
   for (let index = 0; index < rows.length; index += 1) {
     const state = stateAt(index);
-    if (isTarget(state, scope)) recordReplacement(result, state, replacement);
+    if (!isTarget(state, scope)) continue;
+    const sourceValues = groupBy ? validValuesByGroup.get(groupKey(rows[index], groupBy)) ?? [] : validValues;
+    let replacement = customValue;
+    if (method === "mode") replacement = sourceValues.length ? mostCommonValue(sourceValues) : undefined;
+    if (method === "median" || method === "average") {
+      const numericValues = sourceValues.map(parseNumericValue).filter((value) => value !== null);
+      if (!numericValues.length) replacement = undefined;
+      else {
+        const statistic = method === "median"
+          ? median(numericValues)
+          : numericValues.reduce((sum, value) => sum + value, 0) / numericValues.length;
+        replacement = formatStatistic(statistic, type);
+      }
+    }
+    recordReplacement(result, state, replacement);
   }
-  return finishResult(result, "The replacement is identical to the target values.");
+  return finishResult(result, groupBy ? "Some groups have no valid source value." : "The replacement is identical to the target values.");
 }
 
 export function calculateMultiColumnCustomFill(rows, columnOptions, options, collectChanges = false) {
@@ -97,7 +114,7 @@ export function calculateMultiColumnCustomFill(rows, columnOptions, options, col
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
     const row = rows[rowIndex];
     for (const columnOption of columnOptions) {
-      const state = createCellState(row, rowIndex, columnOption.column, columnOption.isValid);
+      const state = createCellState(row, rowIndex, columnOption.column, columnOption.isValid, columnOption.isMissing, columnOption.isIgnoredMissing);
       if (!isTarget(state, scope)) continue;
       result.targetCount += 1;
       recordReplacement(result, state, customValue);
@@ -107,20 +124,23 @@ export function calculateMultiColumnCustomFill(rows, columnOptions, options, col
   return finishResult(result, result.targetCount ? "The replacement is identical to the target values." : "No cells match the selected target.");
 }
 
-function createCellState(row, index, column, validate) {
+function createCellState(row, index, column, validate, detectMissing, ignoreMissing) {
   const value = row[column];
-  const empty = String(value ?? "").trim() === "";
+  const empty = detectMissing ? Boolean(detectMissing(value, row, index)) : String(value ?? "").trim() === "";
+  const ignored = empty && Boolean(ignoreMissing?.(value, row, index));
   return {
     rowId: row.__rowId ?? index,
     row: index + 1,
     column,
     value: value ?? "",
     empty,
-    valid: !empty && Boolean(validate(value)),
+    ignored,
+    valid: !empty && Boolean(validate(value, row, index)),
   };
 }
 
 function isTarget(state, scope) {
+  if (state.ignored) return false;
   if (scope === "empty") return state.empty;
   if (scope === "invalid") return !state.empty && !state.valid;
   return state.empty || !state.valid;
@@ -155,6 +175,35 @@ function finishResult(result, noChangesError = "No cells can be filled with this
   result.error = result.valid ? "" : noChangesError;
   result.examples.sort((a, b) => a.row - b.row || a.column.localeCompare(b.column));
   return result;
+}
+
+function groupIndexes(rows, groupBy) {
+  const groups = new Map();
+  rows.forEach((row, index) => {
+    const key = groupKey(row, groupBy);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(index);
+  });
+  return groups;
+}
+
+function groupKey(row, groupBy) {
+  return groupBy ? String(row?.[groupBy] ?? "").trim() : "__all__";
+}
+
+function compareOrderValues(left, right, leftIndex, rightIndex) {
+  const leftText = String(left ?? "").trim();
+  const rightText = String(right ?? "").trim();
+  if (!leftText && !rightText) return leftIndex - rightIndex;
+  if (!leftText) return 1;
+  if (!rightText) return -1;
+  const leftNumber = Number(leftText.replaceAll(",", ""));
+  const rightNumber = Number(rightText.replaceAll(",", ""));
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) return leftNumber - rightNumber || leftIndex - rightIndex;
+  const leftDate = Date.parse(leftText);
+  const rightDate = Date.parse(rightText);
+  if (Number.isFinite(leftDate) && Number.isFinite(rightDate)) return leftDate - rightDate || leftIndex - rightIndex;
+  return leftText.localeCompare(rightText, undefined, { numeric: true }) || leftIndex - rightIndex;
 }
 
 function mostCommonValue(values) {

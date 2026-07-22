@@ -41,12 +41,44 @@ test("formats numeric statistics for number and integer columns", () => {
   assert.equal(median.changes[0].after, "2");
 });
 
-test("previous and next use original row order and skip invalid sources", () => {
-  const rows = [{ value: "A" }, { value: "" }, { value: "wrong" }, { value: "B" }];
-  const previous = calculateColumnFill(rows, { column: "value", type: "Category", method: "previous", scope: "both", isValid: validText }, true);
-  const next = calculateColumnFill(rows, { column: "value", type: "Category", method: "next", scope: "both", isValid: validText }, true);
+test("previous and next use an explicit order and skip invalid sources", () => {
+  const rows = [{ order: 1, value: "A" }, { order: 2, value: "" }, { order: 3, value: "wrong" }, { order: 4, value: "B" }];
+  const previous = calculateColumnFill(rows, { column: "value", type: "Category", method: "previous", scope: "both", orderBy: "order", isValid: validText }, true);
+  const next = calculateColumnFill(rows, { column: "value", type: "Category", method: "next", scope: "both", orderBy: "order", isValid: validText }, true);
   assert.deepEqual(previous.changes.map((change) => change.after), ["A", "A"]);
   assert.deepEqual(next.changes.map((change) => change.after), ["B", "B"]);
+});
+
+test("statistics can be calculated within groups", () => {
+  const rows = [{ group: "A", value: "2" }, { group: "A", value: "" }, { group: "B", value: "10" }, { group: "B", value: "20" }, { group: "B", value: "" }];
+  const result = calculateColumnFill(rows, { column: "value", type: "Number", method: "average", scope: "empty", groupBy: "group", isValid: validNumber }, true);
+  assert.deepEqual(result.changes.map((change) => change.after), ["2.00", "15.00"]);
+});
+
+test("custom missing detectors target null markers as empty", () => {
+  const rows = [{ value: "NULL" }, { value: "4" }];
+  const result = calculateColumnFill(rows, { column: "value", type: "Number", method: "custom", scope: "empty", customValue: "1", isValid: validNumber, isMissing: (value) => value === "NULL" }, true);
+  assert.equal(result.changes[0].after, "1");
+});
+
+test("allowed missing values are neither targets nor fill sources", () => {
+  const rows = [
+    { __rowId: "1", order: "1", value: "10" },
+    { __rowId: "2", order: "2", value: "" },
+    { __rowId: "3", order: "3", value: "bad" },
+  ];
+  const plan = calculateColumnFill(rows, {
+    column: "value",
+    method: "previous",
+    scope: "both",
+    type: "Number",
+    orderBy: "order",
+    isValid: (value) => /^\d+$/.test(value),
+    isMissing: (value) => value === "",
+    isIgnoredMissing: (value) => value === "",
+  }, true);
+  assert.equal(plan.changeCount, 1);
+  assert.equal(plan.changes[0].after, "10");
 });
 
 test("distribution preserves category proportions with deterministic remainder", () => {

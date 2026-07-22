@@ -15,6 +15,7 @@ build/
 data/generated/
 frontend/node_modules/
 frontend/dist/
+AGENTS.md
 
 # Retired local prototype files; the GitHub release is frontend-only.
 /.agents/
