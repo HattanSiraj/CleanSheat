@@ -7,6 +7,8 @@ import {
   getCombinePreview,
   getSchemaOperationColumns,
   getSplitPreview,
+  mergeVisibleColumnOrder,
+  validateSchemaOperation,
 } from "./cleaningOperations.js";
 
 const rows = (values) => values.map((value, index) => ({ __rowId: `row-${index}`, ...value }));
@@ -62,4 +64,37 @@ test("schema column order follows the source columns", () => {
   assert.deepEqual(result.nextVisibleColumns, ["id", "full", "first", "last"]);
   const replacing = getSchemaOperationColumns(["id", "full", "age"], ["id", "full"], { ...operation, removeSources: true });
   assert.deepEqual(replacing.nextColumns, ["id", "first", "last", "age"]);
+});
+
+test("columns can be created with empty or fixed values", () => {
+  const input = rows([{ id: "1" }, { id: "2" }]);
+  const empty = { type: "createColumn", column: "Total", initialMode: "empty", initialValue: "" };
+  assert.equal(validateSchemaOperation(["id"], empty).valid, true);
+  assert.deepEqual(applySchemaTransformToRows(input, empty).map((row) => row.Total), ["", ""]);
+  const fixed = { ...empty, column: "Status", initialMode: "fixed", initialValue: "Pending" };
+  assert.deepEqual(applySchemaTransformToRows(input, fixed).map((row) => row.Status), ["Pending", "Pending"]);
+  assert.deepEqual(getSchemaOperationColumns(["id"], ["id"], fixed).nextColumns, ["id", "Status"]);
+});
+
+test("column creation rejects reserved and repeated names", () => {
+  assert.equal(validateSchemaOperation(["Email"], { type: "createColumn", column: "email", initialMode: "empty" }).valid, false);
+  assert.equal(validateSchemaOperation(["Email"], { type: "createColumn", column: "__rowId", initialMode: "empty" }).valid, false);
+  assert.equal(validateSchemaOperation(["Email"], { type: "createColumn", column: "__ROWID", initialMode: "empty" }).valid, false);
+});
+
+test("several columns can be deleted while one column must remain", () => {
+  const input = rows([{ id: "1", old: "x", junk: "y" }]);
+  const operation = { type: "deleteColumns", columns: ["old", "junk"] };
+  assert.equal(validateSchemaOperation(["id", "old", "junk"], operation).valid, true);
+  const result = applySchemaTransformToRows(input, operation);
+  assert.deepEqual(Object.keys(result[0]).sort(), ["__rowId", "id"]);
+  assert.deepEqual(getSchemaOperationColumns(["id", "old", "junk"], ["id", "junk"], operation).nextVisibleColumns, ["id"]);
+  assert.equal(validateSchemaOperation(["id", "old"], { type: "deleteColumns", columns: ["id", "old"] }).valid, false);
+});
+
+test("visible column ordering keeps hidden columns in their existing slots", () => {
+  assert.deepEqual(
+    mergeVisibleColumnOrder(["A", "B", "C", "D"], ["D", "A", "C"]),
+    ["D", "B", "A", "C"],
+  );
 });

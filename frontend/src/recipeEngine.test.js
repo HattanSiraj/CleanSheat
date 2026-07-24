@@ -33,6 +33,15 @@ test("required columns account for columns created by earlier steps", () => {
   assert.deepEqual(getRequiredColumns(["Name"], steps), ["Name", "Missing"]);
 });
 
+test("required columns account for direct column creation and deletion", () => {
+  const steps = [
+    { type: "createColumn", column: "Calculated", initialMode: "empty" },
+    { type: "textCleanup", columns: ["Calculated"] },
+    { type: "deleteColumns", columns: ["Old"] },
+  ];
+  assert.deepEqual(getRequiredColumns(["Old"], steps), ["Old"]);
+});
+
 test("recipe steps can be reordered without mutation", () => {
   const steps = [{ type: "textCleanup" }, { type: "deduplicate" }];
   const moved = moveRecipeStep(steps, 1, -1);

@@ -1,3 +1,5 @@
+import { evaluateFormula, parseFormula, parseFormulaNumber } from "./formulaEngine.js";
+
 export function evaluateChallenge(challenge, context) {
   if (!challenge) return emptyEvaluation();
   const needsSourceRows = challenge.objectives.some((objective) => objective.kind === "groupMedianFill");
@@ -29,12 +31,35 @@ export function evaluateChallenge(challenge, context) {
 export function evaluateObjective(objective, context) {
   const rows = context.rows ?? [];
   const rules = context.columnRules ?? {};
+  const columns = context.columns ?? Object.keys(rows[0] ?? {}).filter((column) => column !== "__rowId");
   let result = { complete: false, detail: "Not checked yet" };
 
   if (objective.kind === "types") {
     const entries = Object.entries(objective.expected);
     const matches = entries.filter(([column, type]) => rules[column]?.type === type).length;
     result = { complete: matches === entries.length, detail: `${matches}/${entries.length} column types set` };
+  }
+
+  if (objective.kind === "columnsPresent") {
+    const expected = objective.expected ?? Object.fromEntries((objective.columns ?? []).map((column) => [column, null]));
+    const entries = Object.entries(expected);
+    const matches = entries.filter(([column, type]) => columns.includes(column) && (!type || rules[column]?.type === type)).length;
+    result = {
+      complete: matches === entries.length,
+      detail: matches === entries.length ? "Required columns are ready" : `${matches}/${entries.length} required columns are ready`,
+    };
+  }
+
+  if (objective.kind === "columnsAbsent") {
+    const remaining = objective.columns.filter((column) => columns.includes(column));
+    result = {
+      complete: remaining.length === 0,
+      detail: remaining.length ? `Delete ${remaining.join(", ")}` : "Unwanted columns are gone",
+    };
+  }
+
+  if (objective.kind === "calculatedColumn") {
+    result = evaluateCalculatedColumn(objective, { rows, rules, columns });
   }
 
   if (objective.kind === "noMissing") {
@@ -62,7 +87,12 @@ export function evaluateObjective(objective, context) {
       if (seen.has(key)) duplicates += 1;
       seen.add(key);
     }
-    result = { complete: duplicates === 0, detail: duplicates ? `${duplicates.toLocaleString()} duplicate rows remain` : "Rows are unique" };
+    result = {
+      complete: duplicates === 0,
+      detail: duplicates
+        ? `${duplicates.toLocaleString()} duplicate rows remain, use Cleaning Tools then Duplicates`
+        : "Rows are unique",
+    };
   }
 
   if (objective.kind === "rowCount") {
@@ -91,7 +121,16 @@ export function evaluateObjective(objective, context) {
     const columns = new Set(objective.columns);
     const remaining = (context.scanIssues ?? []).filter((issue) => columns.has(issue.column)).length;
     const hasScanned = Boolean(context.lastScannedAt);
-    result = { complete: hasScanned && remaining === 0, detail: hasScanned ? `${remaining.toLocaleString()} scanned issues remain` : "Run a scan" };
+    const expectedTypes = objective.expectedTypes
+      ?? (objective.expectedType ? Object.fromEntries(objective.columns.map((column) => [column, objective.expectedType])) : {});
+    const wrongTypeColumns = Object.entries(expectedTypes).filter(([column, type]) => rules[column]?.type !== type);
+    const typesReady = wrongTypeColumns.length === 0;
+    const detail = !typesReady
+      ? `Set ${wrongTypeColumns.map(([column, type]) => `${column} to ${type}`).join(", ")}`
+      : hasScanned
+        ? `${remaining.toLocaleString()} scanned issues remain`
+        : "Run a scan";
+    result = { complete: typesReady && hasScanned && remaining === 0, detail };
   }
 
   if (objective.kind === "missingPolicy") {
@@ -122,6 +161,45 @@ export function evaluateObjective(objective, context) {
   }
 
   return { ...objective, ...result };
+}
+
+function evaluateCalculatedColumn(objective, context) {
+  if (!context.columns.includes(objective.target)) {
+    return { complete: false, detail: `Create ${objective.target}` };
+  }
+  if (objective.expectedType && context.rules[objective.target]?.type !== objective.expectedType) {
+    return { complete: false, detail: `Set ${objective.target} to ${objective.expectedType}` };
+  }
+
+  let parsed;
+  try {
+    parsed = parseFormula(objective.formula);
+  } catch {
+    return { complete: false, detail: "Challenge formula is invalid" };
+  }
+  const missingInputs = parsed.references.filter((column) => !context.columns.includes(column));
+  if (missingInputs.length) {
+    return { complete: false, detail: `Keep ${missingInputs.join(", ")}` };
+  }
+
+  let failures = 0;
+  for (const row of context.rows) {
+    const actual = parseFormulaNumber(row[objective.target]);
+    let expected;
+    try {
+      expected = evaluateFormula(parsed.ast, row);
+    } catch {
+      failures += 1;
+      continue;
+    }
+    if (actual === null || Math.abs(actual - expected) > (objective.tolerance ?? 0.01)) failures += 1;
+  }
+  return {
+    complete: context.rows.length > 0 && failures === 0,
+    detail: failures
+      ? `${failures.toLocaleString()} rows do not match the calculation`
+      : `${context.rows.length.toLocaleString()} rows calculated correctly`,
+  };
 }
 
 export function evaluateRule(rule, context) {

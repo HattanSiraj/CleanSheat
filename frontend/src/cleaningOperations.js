@@ -129,6 +129,17 @@ export function getCombinePreview(rows, options) {
 }
 
 export function applySchemaTransformToRows(rows, operation) {
+  if (operation.type === "createColumn") {
+    const initialValue = operation.initialMode === "fixed" ? String(operation.initialValue ?? "") : "";
+    return rows.map((row) => ({ ...row, [operation.column]: initialValue }));
+  }
+  if (operation.type === "deleteColumns") {
+    return rows.map((row) => {
+      const nextRow = { ...row };
+      for (const column of operation.columns) delete nextRow[column];
+      return nextRow;
+    });
+  }
   if (operation.type === "splitColumn") {
     return rows.map((row) => {
       const nextRow = { ...row };
@@ -151,6 +162,23 @@ export function applySchemaTransformToRows(rows, operation) {
 }
 
 export function getSchemaOperationColumns(columns, visibleColumns, operation) {
+  if (operation.type === "createColumn") {
+    return {
+      nextColumns: [...columns, operation.column],
+      nextVisibleColumns: [...visibleColumns, operation.column],
+      addedColumns: [operation.column],
+      removedColumns: [],
+    };
+  }
+  if (operation.type === "deleteColumns") {
+    const removed = uniqueStrings(operation.columns);
+    return {
+      nextColumns: columns.filter((column) => !removed.includes(column)),
+      nextVisibleColumns: visibleColumns.filter((column) => !removed.includes(column)),
+      addedColumns: [],
+      removedColumns: removed,
+    };
+  }
   const sourceColumns = operation.type === "splitColumn" ? [operation.sourceColumn] : operation.sourceColumns;
   const outputColumns = operation.type === "splitColumn" ? operation.outputColumns : [operation.outputColumn];
   const removed = operation.removeSources ? sourceColumns : [];
@@ -168,6 +196,24 @@ export function getSchemaOperationColumns(columns, visibleColumns, operation) {
 }
 
 export function validateSchemaOperation(columns, operation) {
+  if (operation.type === "createColumn") {
+    const column = String(operation.column ?? "").trim();
+    if (!column) return invalidPlan("Enter a column name.");
+    if (column.toLocaleLowerCase() === "__rowid") return invalidPlan("This column name is reserved.");
+    if (columns.some((current) => current.toLocaleLowerCase() === column.toLocaleLowerCase())) {
+      return invalidPlan(`Column "${column}" already exists.`);
+    }
+    if (!["empty", "fixed"].includes(operation.initialMode)) return invalidPlan("Choose how the column should start.");
+    return { valid: true };
+  }
+  if (operation.type === "deleteColumns") {
+    const selected = uniqueStrings(operation.columns);
+    if (!selected.length) return invalidPlan("Choose at least one column.");
+    const missing = selected.find((column) => !columns.includes(column));
+    if (missing) return invalidPlan(`Column "${missing}" is missing.`);
+    if (selected.length >= columns.length) return invalidPlan("Keep at least one column.");
+    return { valid: true };
+  }
   if (operation.type === "splitColumn") {
     const validation = validateSplitOptions(operation);
     if (!validation.valid) return validation;
@@ -191,9 +237,20 @@ export function validateSchemaOperation(columns, operation) {
 }
 
 export function getSchemaRecipeDependencies(step) {
+  if (step.type === "createColumn") return { inputs: [], outputs: [step.column] };
+  if (step.type === "deleteColumns") return { inputs: step.columns ?? [], outputs: [] };
   if (step.type === "splitColumn") return { inputs: [step.sourceColumn], outputs: step.outputColumns };
   if (step.type === "combineColumns") return { inputs: step.sourceColumns, outputs: [step.outputColumn] };
   return { inputs: [], outputs: [] };
+}
+
+export function mergeVisibleColumnOrder(columns, visibleColumnOrder) {
+  const visibleSet = new Set(visibleColumnOrder);
+  const knownVisible = visibleColumnOrder.filter((column) => columns.includes(column));
+  let visibleIndex = 0;
+  return columns.map((column) => (
+    visibleSet.has(column) ? knownVisible[visibleIndex++] : column
+  ));
 }
 
 function splitValue(value, options) {

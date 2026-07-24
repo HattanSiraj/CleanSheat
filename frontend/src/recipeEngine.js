@@ -9,6 +9,8 @@ const STEP_TYPES = new Set([
   "deleteInvalidRows",
   "deduplicate",
   "textCleanup",
+  "createColumn",
+  "deleteColumns",
   "splitColumn",
   "combineColumns",
 ]);
@@ -105,6 +107,10 @@ export function getRequiredColumns(initialColumns, steps, relationships = []) {
       if (step.removeSources) for (const source of step.sourceColumns ?? []) available.delete(source);
       if (step.outputColumn) available.add(step.outputColumn);
     }
+    if (step.type === "createColumn" && step.column) available.add(step.column);
+    if (step.type === "deleteColumns") {
+      for (const column of step.columns ?? []) available.delete(column);
+    }
   }
   return [...required];
 }
@@ -114,6 +120,8 @@ export function getStepInputs(step, relationshipById = new Map()) {
   if (step.type === "numericConversion") return [step.column].filter(Boolean);
   if (step.type === "splitColumn") return [step.sourceColumn].filter(Boolean);
   if (step.type === "combineColumns") return step.sourceColumns ?? [];
+  if (step.type === "createColumn") return [];
+  if (step.type === "deleteColumns") return step.columns ?? [];
   if (step.type === "relationshipFix") {
     const inputs = [];
     for (const id of step.relationshipIds ?? []) {
@@ -143,6 +151,8 @@ export function getRecipeStepLabel(step) {
     deleteInvalidRows: "Delete rows with issues",
     deduplicate: "Remove duplicates",
     textCleanup: "Clean text",
+    createColumn: "Create column",
+    deleteColumns: "Delete columns",
     splitColumn: "Split column",
     combineColumns: "Combine columns",
   };

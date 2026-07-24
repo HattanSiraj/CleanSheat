@@ -30,10 +30,143 @@ test("formula objectives reject missing operands and accept matching totals", ()
   assert.equal(evaluateObjective(objective, { rows: [{ Qty: "", Price: "4", Total: "8" }] }).complete, false);
 });
 
+test("calculated column objectives require the column type and every formula result", () => {
+  const objective = {
+    kind: "calculatedColumn",
+    target: "Closing",
+    expectedType: "Number",
+    formula: "[Opening] + [Delivered] - [Sold] - [Wasted]",
+    tolerance: 0.01,
+  };
+  const base = {
+    columns: ["Opening", "Delivered", "Sold", "Wasted"],
+    columnRules: {},
+    rows: [{ Opening: "100", Delivered: "25", Sold: "60", Wasted: "3" }],
+  };
+  assert.equal(evaluateObjective(objective, base).detail, "Create Closing");
+  const withColumn = { ...base, columns: [...base.columns, "Closing"], rows: [{ ...base.rows[0], Closing: "62" }] };
+  assert.equal(evaluateObjective(objective, withColumn).detail, "Set Closing to Number");
+  assert.equal(evaluateObjective(objective, { ...withColumn, columnRules: { Closing: { type: "Number" } } }).complete, true);
+  assert.equal(evaluateObjective(objective, { ...withColumn, columnRules: { Closing: { type: "Number" } }, rows: [{ ...withColumn.rows[0], Closing: "61" }] }).complete, false);
+});
+
+test("column objectives track required and deleted columns", () => {
+  const context = { columns: ["ID", "Total"], columnRules: { Total: { type: "Number" } } };
+  assert.equal(evaluateObjective({ kind: "columnsPresent", expected: { Total: "Number" } }, context).complete, true);
+  assert.equal(evaluateObjective({ kind: "columnsAbsent", columns: ["Legacy"] }, context).complete, true);
+  assert.equal(evaluateObjective({ kind: "columnsAbsent", columns: ["Total"] }, context).complete, false);
+});
+
+test("cafe challenge needs a calculated column and removes the kid notes", () => {
+  const challenge = CHALLENGES.find((item) => item.id === "cafe-closing-time");
+  const sourceRows = challenge.createRows();
+  const initialColumns = Object.keys(sourceRows[0]);
+  assert.equal(evaluateChallenge(challenge, { rows: sourceRows, columns: initialColumns, columnRules: {} }).complete, false);
+
+  const rows = sourceRows.map((row) => {
+    const { "Kid Notes": ignored, ...cleanRow } = row;
+    return {
+      ...cleanRow,
+      "Closing Stock": String(Number(row["Opening Stock"]) + Number(row.Delivered) - Number(row.Sold) - Number(row.Wasted)),
+    };
+  });
+  const columns = [...Object.keys(rows[0])];
+  const evaluation = evaluateChallenge(challenge, {
+    rows,
+    columns,
+    columnRules: { "Closing Stock": { type: "Number" } },
+    history: [],
+  });
+  assert.equal(evaluation.complete, true);
+});
+
+test("dataset from hell can be completed with the new calculation chain", () => {
+  const challenge = CHALLENGES.find((item) => item.id === "dataset-from-hell");
+  const seen = new Set();
+  const rows = challenge.createRows().flatMap((row, index) => {
+    if (seen.has(row["Row Key"])) return [];
+    seen.add(row["Row Key"]);
+    const gross = numericOr(row["Gross Amount"], 100);
+    const discountPercent = numericOr(row["Discount Percent"], 10);
+    const shipping = numericOr(row["Shipping Fee"], 5);
+    const taxPercent = numericOr(row["Tax Percent"], 15);
+    const discount = Number((gross * discountPercent / 100).toFixed(2));
+    const tax = Number(((gross - discount) * taxPercent / 100).toFixed(2));
+    const { "Legacy Total": ignored, ...cleanRow } = row;
+    return [{
+      ...cleanRow,
+      Email: String(row.Email).includes("@") ? row.Email : `fixed.${index}@example.com`,
+      Phone: row.Phone === "not supplied" ? `+966 55 ${String(1000000 + index).slice(-7)}` : row.Phone,
+      "Order Date": /^\d{4}-\d{2}-\d{2}$/.test(row["Order Date"]) ? row["Order Date"] : "2025-01-01",
+      Status: titleValue(row.Status),
+      "Gross Amount": gross.toFixed(2),
+      "Discount Percent": String(discountPercent),
+      "Shipping Fee": shipping.toFixed(2),
+      "Tax Percent": String(taxPercent),
+      "Discount Amount": discount.toFixed(2),
+      "Tax Amount": tax.toFixed(2),
+      "Final Charge": (gross - discount + tax + shipping).toFixed(2),
+    }];
+  });
+  const columns = Object.keys(rows[0]);
+  const columnRules = Object.fromEntries(columns.map((column) => [column, { type: "Text" }]));
+  Object.assign(columnRules, {
+    Email: { type: "Email" },
+    Phone: { type: "Phone" },
+    "Order Date": { type: "Date" },
+    Status: { type: "Category" },
+    "Gross Amount": { type: "Number" },
+    "Discount Percent": { type: "Number" },
+    "Shipping Fee": { type: "Number" },
+    "Tax Percent": { type: "Number" },
+    "Discount Amount": { type: "Number" },
+    "Tax Amount": { type: "Number" },
+    "Final Charge": { type: "Number" },
+  });
+  const evaluation = evaluateChallenge(challenge, {
+    rows,
+    columns,
+    columnRules,
+    scanIssues: [],
+    lastScannedAt: new Date(),
+    history: [],
+  });
+  assert.equal(evaluation.complete, true);
+});
+
 test("method objectives inspect fill metadata", () => {
   const objective = { kind: "method", method: "median", column: "Time", groupBy: "Priority" };
   const history = [{ recipeStep: { type: "fill", method: "median", columns: ["Time"], groupBy: "Priority" } }];
   assert.equal(evaluateObjective(objective, { history }).complete, true);
+});
+
+test("optional phone objective accepts cleaned empty values without old null markers", () => {
+  const challenge = CHALLENGES.find((item) => item.id === "signup-swamp");
+  const objective = challenge.objectives.find((item) => item.id === "phone-optional");
+  const columnRules = { Phone: { missingPolicy: "allowed", missingTokens: [] } };
+  assert.equal(evaluateObjective(objective, { columnRules }).complete, true);
+});
+
+test("signup challenge tracks email and phone scan issues separately", () => {
+  const challenge = CHALLENGES.find((item) => item.id === "signup-swamp");
+  const emailObjective = challenge.objectives.find((item) => item.id === "emails-clean");
+  const phoneObjective = challenge.objectives.find((item) => item.id === "phones-clean");
+  const scanIssues = [{ column: "Email" }];
+  const columnRules = { Email: { type: "Email" }, Phone: { type: "Phone" } };
+  assert.equal(evaluateObjective(emailObjective, { scanIssues, lastScannedAt: new Date(), columnRules }).complete, false);
+  assert.equal(evaluateObjective(phoneObjective, { scanIssues, lastScannedAt: new Date(), columnRules }).complete, true);
+});
+
+test("signup scan objectives cannot pass while their columns are still Text", () => {
+  const challenge = CHALLENGES.find((item) => item.id === "signup-swamp");
+  const emailObjective = challenge.objectives.find((item) => item.id === "emails-clean");
+  const result = evaluateObjective(emailObjective, {
+    scanIssues: [],
+    lastScannedAt: new Date(),
+    columnRules: { Email: { type: "Text" } },
+  });
+  assert.equal(result.complete, false);
+  assert.equal(result.detail, "Set Email to Email");
 });
 
 test("no-missing objectives cannot be completed by deleting required rows", () => {
@@ -88,6 +221,13 @@ test("minimum match rules protect meaningful rows", () => {
   const rule = { kind: "minimumMatches", column: "Invoice", operator: "startsWith", value: "C", minimum: 2 };
   assert.equal(evaluateRule(rule, { rows }).complete, true);
   assert.equal(evaluateRule({ ...rule, minimum: 3 }, { rows }).complete, false);
+});
+
+test("duplicate objectives point players to the correct cleaning tool", () => {
+  const objective = { kind: "unique", columns: ["ID"] };
+  const result = evaluateObjective(objective, { rows: [{ ID: "1" }, { ID: "1" }] });
+  assert.equal(result.complete, false);
+  assert.match(result.detail, /Cleaning Tools then Duplicates/);
 });
 
 test("challenge revisions invalidate old records and saves", () => {
@@ -171,4 +311,14 @@ function calculatePriorityMedians(rows) {
     const median = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
     return [priority, median];
   }));
+}
+
+function numericOr(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function titleValue(value) {
+  const normalized = String(value).trim().toLocaleLowerCase();
+  return normalized.charAt(0).toLocaleUpperCase() + normalized.slice(1);
 }

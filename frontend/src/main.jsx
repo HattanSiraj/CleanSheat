@@ -18,6 +18,7 @@ import {
   getCombinePreview,
   getSchemaOperationColumns,
   getSplitPreview,
+  mergeVisibleColumnOrder,
   validateSchemaOperation,
 } from "./cleaningOperations.js";
 import {
@@ -30,6 +31,7 @@ import {
   serializeRecipe,
   validateRecipe,
 } from "./recipeEngine.js";
+import { evaluateFormula, formatFormulaNumber, parseFormula, parseFormulaNumber } from "./formulaEngine.js";
 import { CHALLENGES, getChallenge, hasCurrentChallengeRevision } from "./challengeData.js";
 import { evaluateChallenge } from "./challengeEngine.js";
 import { deleteWorkspace, loadWorkspace, saveWorkspace } from "./workspaceStorage.js";
@@ -77,6 +79,7 @@ const REGEX_STORAGE_KEY = "cleansheet.saved-regex-rules";
 const RELATIONSHIP_STORAGE_KEY = "cleansheet.column-relationships";
 const RELATIONSHIP_TOLERANCE = 0.01;
 const HISTORY_LIMIT = 25;
+const CHALLENGE_CONFETTI_COLORS = ["#ef7b2d", "#49c5b6", "#f6be8e", "#3f7f91", "#f7f2e8"];
 const GRID_ROW_SELECTION = {
   mode: "multiRow",
   checkboxes: false,
@@ -103,6 +106,8 @@ const EMPTY_MISSING_RULE_DRAFT = {
 };
 const EMPTY_DUPLICATE_DRAFT = { columns: [], keep: "first", trimValues: false, ignoreCase: false };
 const EMPTY_TEXT_CLEANUP_DRAFT = { columns: [], trimEdges: true, collapseWhitespace: true, caseMode: "keep" };
+const EMPTY_CREATE_COLUMN_DRAFT = { type: "createColumn", column: "", dataType: "Text", initialMode: "empty", initialValue: "" };
+const EMPTY_DELETE_COLUMNS_DRAFT = { type: "deleteColumns", columns: [] };
 const EMPTY_SPLIT_DRAFT = { type: "splitColumn", sourceColumn: "", outputColumns: ["Part 1", "Part 2"], separatorMode: "whitespace", customSeparator: "", removeSources: false };
 const EMPTY_COMBINE_DRAFT = { type: "combineColumns", sourceColumns: [], outputColumn: "Combined", separatorMode: "space", customSeparator: "", skipEmpty: true, removeSources: false };
 const DEFAULT_REGEX_BUILDER = {
@@ -127,6 +132,7 @@ const REGEX_CHEAT_SHEET = [
 
 function App() {
   const gridRef = useRef(null);
+  const challengeResultTimeoutRef = useRef(null);
   const [rows, setRows] = useState([]);
   const [columns, setColumns] = useState([]);
   const [visibleColumns, setVisibleColumns] = useState([]);
@@ -169,9 +175,11 @@ function App() {
   const [missingRuleNotice, setMissingRuleNotice] = useState("");
   const [duplicateDraft, setDuplicateDraft] = useState(EMPTY_DUPLICATE_DRAFT);
   const [textCleanupDraft, setTextCleanupDraft] = useState(EMPTY_TEXT_CLEANUP_DRAFT);
+  const [createColumnDraft, setCreateColumnDraft] = useState(EMPTY_CREATE_COLUMN_DRAFT);
+  const [deleteColumnsDraft, setDeleteColumnsDraft] = useState(EMPTY_DELETE_COLUMNS_DRAFT);
   const [splitDraft, setSplitDraft] = useState(EMPTY_SPLIT_DRAFT);
   const [combineDraft, setCombineDraft] = useState(EMPTY_COMBINE_DRAFT);
-  const [columnOperationMode, setColumnOperationMode] = useState("split");
+  const [columnOperationMode, setColumnOperationMode] = useState("create");
   const [showIssueRowsOnly, setShowIssueRowsOnly] = useState(false);
   const [capturedRecipeSteps, setCapturedRecipeSteps] = useState([]);
   const [savedRecipes, setSavedRecipes] = useState(() => readRecipes(window.localStorage));
@@ -185,6 +193,7 @@ function App() {
   const [isObjectivesOpen, setIsObjectivesOpen] = useState(true);
   const [challengeEvaluation, setChallengeEvaluation] = useState(null);
   const [isChallengeResultOpen, setIsChallengeResultOpen] = useState(false);
+  const [isChallengeCelebrating, setIsChallengeCelebrating] = useState(false);
   const [challengeRecords, setChallengeRecords] = useState(readChallengeRecords);
   const [savedWorkspaceIds, setSavedWorkspaceIds] = useState([]);
   const [pendingChallengeLaunch, setPendingChallengeLaunch] = useState(null);
@@ -224,6 +233,10 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem("cleansheet.challenge-records", JSON.stringify(challengeRecords));
   }, [challengeRecords]);
+
+  useEffect(() => () => {
+    if (challengeResultTimeoutRef.current) window.clearTimeout(challengeResultTimeoutRef.current);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -432,13 +445,13 @@ function App() {
     [activeCleaningTool, deferredTextCleanupDraft, isCleaningToolsOpen, rows],
   );
   const splitPreview = useMemo(
-    () => isCleaningToolsOpen && activeCleaningTool === "splitCombine"
+    () => isCleaningToolsOpen && activeCleaningTool === "manageColumns"
       ? getSplitPreview(rows, deferredSplitDraft)
       : { valid: true, changedRowCount: 0, examples: [] },
     [activeCleaningTool, deferredSplitDraft, isCleaningToolsOpen, rows],
   );
   const combinePreview = useMemo(
-    () => isCleaningToolsOpen && activeCleaningTool === "splitCombine"
+    () => isCleaningToolsOpen && activeCleaningTool === "manageColumns"
       ? getCombinePreview(rows, deferredCombineDraft)
       : { valid: true, changedRowCount: 0, examples: [] },
     [activeCleaningTool, deferredCombineDraft, isCleaningToolsOpen, rows],
@@ -540,6 +553,8 @@ function App() {
                 sortable: false,
                 pinned: "left",
                 width: 82,
+                lockPosition: "left",
+                suppressMovable: true,
               },
             ]
           : []),
@@ -609,6 +624,7 @@ function App() {
   }
 
   function loadData(nextRows, nextFileName, options = {}) {
+    cancelChallengeCelebration();
     const normalizedRows = nextRows.map((row) => normalizeRow(row));
     const nextColumns = collectColumns(normalizedRows);
     const inferredRules = Object.fromEntries(
@@ -746,6 +762,7 @@ function App() {
   }
 
   async function exitChallenge() {
+    cancelChallengeCelebration();
     if (activeChallengeId && rows.length) {
       await saveWorkspace(`challenge:${activeChallengeId}`, createCurrentWorkspaceSnapshot()).catch(() => {});
     }
@@ -773,6 +790,7 @@ function App() {
   }
 
   function resetLoadedFileState() {
+    cancelChallengeCelebration();
     setRows([]);
     setColumns([]);
     setVisibleColumns([]);
@@ -816,6 +834,27 @@ function App() {
     setHasUnscannedChanges(true);
   }
 
+  function handleColumnMoved(event) {
+    if (!event.finished || event.source !== "uiColumnMoved") return;
+    const nextVisibleColumns = event.api
+      .getAllDisplayedColumns()
+      .map((column) => column.getColDef().field)
+      .filter((field) => visibleColumns.includes(field));
+    if (
+      nextVisibleColumns.length !== visibleColumns.length
+      || nextVisibleColumns.every((column, index) => column === visibleColumns[index])
+    ) return;
+    const nextColumns = mergeVisibleColumnOrder(columns, nextVisibleColumns);
+    pushHistory({
+      label: "Move columns",
+      kind: "columnOrder",
+      before: { columns, visibleColumns },
+      after: { columns: nextColumns, visibleColumns: nextVisibleColumns },
+    });
+    setColumns(nextColumns);
+    setVisibleColumns(nextVisibleColumns);
+  }
+
   function pushHistory(action) {
     const nextAction = {
       ...action,
@@ -851,7 +890,7 @@ function App() {
     applyHistoryAction(action, "undo");
     if (action.captureId) setCapturedRecipeSteps((steps) => steps.filter((step) => step.captureId !== action.captureId));
     setHistory((current) => ({ past: current.past.slice(0, -1), future: [...current.future, action] }));
-    clearDerivedResults();
+    if (action.kind !== "columnOrder") clearDerivedResults();
   }
 
   function redo() {
@@ -862,7 +901,7 @@ function App() {
       setCapturedRecipeSteps((steps) => [...steps, { ...action.recipeStep, captureId: action.captureId }]);
     }
     setHistory((current) => ({ past: [...current.past, action].slice(-HISTORY_LIMIT), future: current.future.slice(0, -1) }));
-    clearDerivedResults();
+    if (action.kind !== "columnOrder") clearDerivedResults();
   }
 
   function applyHistoryAction(action, direction) {
@@ -890,7 +929,14 @@ function App() {
       setColumns(metadata.columns);
       setVisibleColumns(metadata.visibleColumns);
       setColumnRules(metadata.columnRules);
+      if (metadata.relationshipRules) setRelationshipRules(metadata.relationshipRules);
       setSelectedColumn(metadata.selectedColumn);
+      return;
+    }
+    if (action.kind === "columnOrder") {
+      const metadata = direction === "undo" ? action.before : action.after;
+      setColumns(metadata.columns);
+      setVisibleColumns(metadata.visibleColumns);
       return;
     }
     if (action.kind === "config") {
@@ -973,7 +1019,7 @@ function App() {
     if (tool === "textCleanup") {
       setTextCleanupDraft((draft) => ({ ...draft, columns: draft.columns.filter((column) => columns.includes(column)).length ? draft.columns.filter((column) => columns.includes(column)) : selectedColumn ? [selectedColumn] : [...visibleColumns] }));
     }
-    if (tool === "splitCombine") {
+    if (tool === "manageColumns") {
       const source = columns.includes(splitDraft.sourceColumn) ? splitDraft.sourceColumn : selectedColumn || columns[0] || "";
       setSplitDraft((draft) => ({
         ...draft,
@@ -985,6 +1031,10 @@ function App() {
         sourceColumns: draft.sourceColumns.filter((column) => columns.includes(column)).length >= 2
           ? draft.sourceColumns.filter((column) => columns.includes(column))
           : visibleColumns.slice(0, 2),
+      }));
+      setDeleteColumnsDraft((draft) => ({
+        ...draft,
+        columns: draft.columns.filter((column) => columns.includes(column)),
       }));
     }
     setRecipeMessage("");
@@ -1094,7 +1144,7 @@ function App() {
   }
 
   function applySplitColumns() {
-    applySchemaOperation(splitDraft, "Split column", {
+    applySchemaOperation("Split column", {
       type: "splitColumn",
       ...splitDraft,
       outputColumns: splitDraft.outputColumns.map((column) => column.trim()),
@@ -1102,7 +1152,7 @@ function App() {
   }
 
   function applyCombinedColumns() {
-    applySchemaOperation(combineDraft, "Combine columns", {
+    applySchemaOperation("Combine columns", {
       type: "combineColumns",
       ...combineDraft,
       outputColumn: combineDraft.outputColumn.trim(),
@@ -1110,36 +1160,71 @@ function App() {
     });
   }
 
-  function applySchemaOperation(draft, label, recipeStep) {
-    const operation = recipeStep;
+  function applyCreateColumn() {
+    const operation = {
+      ...createColumnDraft,
+      column: createColumnDraft.column.trim(),
+    };
+    const valueValidation = validateCreateColumnValue(operation);
+    if (!valueValidation.valid) return;
+    applySchemaOperation("Create column", operation);
+  }
+
+  function applyDeleteColumns() {
+    applySchemaOperation("Delete columns", {
+      ...deleteColumnsDraft,
+      columns: [...deleteColumnsDraft.columns],
+    });
+  }
+
+  function applySchemaOperation(label, operation) {
     const validation = validateSchemaOperation(columns, operation);
     if (!validation.valid) return;
     const { nextColumns, nextVisibleColumns, addedColumns, removedColumns } = getSchemaOperationColumns(columns, visibleColumns, operation);
+    const removedColumnSet = new Set(removedColumns);
+    const removedRelationships = relationshipRules.filter((rule) => (
+      getRelationshipRuleColumns(rule).some((column) => removedColumnSet.has(column))
+    ));
+    const nextRelationships = relationshipRules.filter((rule) => !removedRelationships.includes(rule));
+    const nextSelectedColumn = addedColumns[0]
+      ?? (nextColumns.includes(selectedColumn) ? selectedColumn : nextColumns[0] ?? "");
+    const confirmationMessage = operation.type === "deleteColumns"
+      ? `Delete ${removedColumns.length.toLocaleString()} column${removedColumns.length === 1 ? "" : "s"} across ${rows.length.toLocaleString()} rows${removedRelationships.length ? ` and remove ${removedRelationships.length.toLocaleString()} connected formula rule${removedRelationships.length === 1 ? "" : "s"}` : ""}?`
+      : operation.type === "createColumn"
+        ? `Create "${operation.column}" across ${rows.length.toLocaleString()} row${rows.length === 1 ? "" : "s"}?`
+        : `${label} across ${rows.length.toLocaleString()} row${rows.length === 1 ? "" : "s"}${operation.removeSources ? " and remove the source columns" : ""}?`;
     requestConfirmation({
       title: `${label}?`,
-      message: `${label} across ${rows.length.toLocaleString()} row${rows.length === 1 ? "" : "s"}${operation.removeSources ? " and remove the source columns" : ""}?`,
+      message: confirmationMessage,
       confirmLabel: label,
-      tone: "default",
+      tone: operation.type === "deleteColumns" ? "danger" : "default",
       onConfirm: () => {
         const nextRules = { ...columnRules };
         for (const column of removedColumns) delete nextRules[column];
-        for (const column of addedColumns) nextRules[column] = createColumnRule("Text");
-        const nextSelectedColumn = addedColumns[0] ?? nextColumns[0] ?? "";
+        for (const column of addedColumns) {
+          nextRules[column] = createColumnRule(
+            operation.type === "createColumn" ? operation.dataType : "Text",
+          );
+        }
         const action = createSchemaHistoryAction({
           label,
           operation,
           rows,
           addedColumns,
           removedColumns,
-          before: { columns, visibleColumns, columnRules, selectedColumn },
-          after: { columns: nextColumns, visibleColumns: nextVisibleColumns, columnRules: nextRules, selectedColumn: nextSelectedColumn },
-          recipeStep,
+          before: { columns, visibleColumns, columnRules, relationshipRules, selectedColumn },
+          after: { columns: nextColumns, visibleColumns: nextVisibleColumns, columnRules: nextRules, relationshipRules: nextRelationships, selectedColumn: nextSelectedColumn },
+          recipeStep: operation,
         });
         setRows((currentRows) => applySchemaTransformToRows(currentRows, operation));
         setColumns(nextColumns);
         setVisibleColumns(nextVisibleColumns);
         setColumnRules(nextRules);
+        setRelationshipRules(nextRelationships);
         setSelectedColumn(nextSelectedColumn);
+        if (relationshipDraft.id && removedRelationships.some((rule) => rule.id === relationshipDraft.id)) {
+          setRelationshipDraft(EMPTY_RELATIONSHIP_DRAFT);
+        }
         pushHistory(action);
         clearDerivedResults();
         setIsCleaningToolsOpen(false);
@@ -1371,27 +1456,42 @@ function App() {
         continue;
       }
 
-      if (step.type === "splitColumn" || step.type === "combineColumns") {
+      if (["createColumn", "deleteColumns", "splitColumn", "combineColumns"].includes(step.type)) {
         const validation = validateSchemaOperation(workingColumns, step);
         if (!validation.valid) return { valid: false, error: `${getRecipeStepLabel(step)}: ${validation.error}` };
+        if (step.type === "createColumn") {
+          const valueValidation = validateCreateColumnValue(step);
+          if (!valueValidation.valid) return { valid: false, error: `${getRecipeStepLabel(step)}: ${valueValidation.error}` };
+        }
         const metadata = getSchemaOperationColumns(workingColumns, workingVisible, step);
         const nextRules = { ...workingRules };
         for (const column of metadata.removedColumns) delete nextRules[column];
-        for (const column of metadata.addedColumns) nextRules[column] = cloneSerializable(recipe.columnRules[column] ?? createColumnRule("Text"));
-        const nextSelected = metadata.addedColumns[0] ?? workingSelected;
+        for (const column of metadata.addedColumns) {
+          nextRules[column] = cloneSerializable(
+            recipe.columnRules[column]
+              ?? createColumnRule(step.type === "createColumn" ? step.dataType : "Text"),
+          );
+        }
+        const removedColumnSet = new Set(metadata.removedColumns);
+        const nextRelationships = workingRelationships.filter((rule) => (
+          !getRelationshipRuleColumns(rule).some((column) => removedColumnSet.has(column))
+        ));
+        const nextSelected = metadata.addedColumns[0]
+          ?? (metadata.nextColumns.includes(workingSelected) ? workingSelected : metadata.nextColumns[0] ?? "");
         const schemaAction = createSchemaHistoryAction({
           label: getRecipeStepLabel(step),
           operation: step,
           rows: workingRows,
           addedColumns: metadata.addedColumns,
           removedColumns: metadata.removedColumns,
-          before: { columns: workingColumns, visibleColumns: workingVisible, columnRules: workingRules, selectedColumn: workingSelected },
-          after: { columns: metadata.nextColumns, visibleColumns: metadata.nextVisibleColumns, columnRules: nextRules, selectedColumn: nextSelected },
+          before: { columns: workingColumns, visibleColumns: workingVisible, columnRules: workingRules, relationshipRules: workingRelationships, selectedColumn: workingSelected },
+          after: { columns: metadata.nextColumns, visibleColumns: metadata.nextVisibleColumns, columnRules: nextRules, relationshipRules: nextRelationships, selectedColumn: nextSelected },
         });
         workingRows = applySchemaTransformToRows(workingRows, step);
         workingColumns = metadata.nextColumns;
         workingVisible = metadata.nextVisibleColumns;
         workingRules = nextRules;
+        workingRelationships = nextRelationships;
         workingSelected = nextSelected;
         actions.push(schemaAction);
         summary.push({ label: getRecipeStepLabel(step), count: workingRows.length, unit: "rows" });
@@ -1956,6 +2056,7 @@ function App() {
       const allIssues = validateRows(allRows, allRules);
       const evaluation = evaluateChallenge(activeChallenge, {
         rows,
+        columns,
         columnRules: allRules,
         scanIssues: allIssues,
         lastScannedAt: scannedAt,
@@ -1976,8 +2077,32 @@ function App() {
           },
         };
       });
-      if (evaluation.complete) setIsChallengeResultOpen(true);
+      if (evaluation.complete) startChallengeCelebration();
+      else cancelChallengeCelebration();
     }
+  }
+
+  function startChallengeCelebration() {
+    cancelChallengeCelebration();
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setIsChallengeResultOpen(true);
+      return;
+    }
+    setIsChallengeResultOpen(false);
+    setIsChallengeCelebrating(true);
+    challengeResultTimeoutRef.current = window.setTimeout(() => {
+      challengeResultTimeoutRef.current = null;
+      setIsChallengeCelebrating(false);
+      setIsChallengeResultOpen(true);
+    }, 1000);
+  }
+
+  function cancelChallengeCelebration() {
+    if (challengeResultTimeoutRef.current) {
+      window.clearTimeout(challengeResultTimeoutRef.current);
+      challengeResultTimeoutRef.current = null;
+    }
+    setIsChallengeCelebrating(false);
   }
 
   function deleteRowsWithValidationIssues() {
@@ -2198,11 +2323,6 @@ function App() {
     downloadCsv(csv, "cleansheet_validation_issues.csv");
   }
 
-  function exportCleaningLog() {
-    const logRows = history.past.map((action, index) => summarizeHistoryAction(action, index));
-    downloadCsv(Papa.unparse(logRows), "cleansheet_cleaning_log.csv");
-  }
-
   function downloadCsv(csv, outputFileName) {
     downloadText(csv, outputFileName, "text/csv;charset=utf-8");
   }
@@ -2247,12 +2367,8 @@ function App() {
             <ToolCard title="Missing Values" description="Decide when blanks and markers like N/A count as problems" onClick={() => openCleaningTools("missingValues")} disabled={!columns.length} />
             <ToolCard title="Duplicates" description="Find repeated rows using the columns you choose" onClick={() => openCleaningTools("duplicates")} disabled={!columns.length} />
             <ToolCard title="Text Cleanup" description="Fix spacing and capitalization in bulk" onClick={() => openCleaningTools("textCleanup")} disabled={!columns.length} />
-            <ToolCard title="Split / Combine" description="Create columns by separating or joining values" onClick={() => openCleaningTools("splitCombine")} disabled={!columns.length} />
+            <ToolCard title="Manage Columns" description="Create, delete, split, or combine columns" onClick={() => openCleaningTools("manageColumns")} disabled={!columns.length} />
             <ToolCard title="Recipes (WIP use with care)" description="Stores actions made automatically, reuse it on another CSV" onClick={() => setActiveCleaningTool("recipes")} />
-          </div>
-          <div className="cleaning-log-export">
-            <div><strong>Cleaning log</strong><span>{history.past.length.toLocaleString()} applied action{history.past.length === 1 ? "" : "s"} in this workspace</span></div>
-            <button type="button" className="secondary-button" onClick={exportCleaningLog} disabled={!history.past.length}>Export CSV</button>
           </div>
         </div>
       );
@@ -2404,22 +2520,90 @@ function App() {
       );
     }
 
-    if (activeCleaningTool === "splitCombine") return renderSplitCombineTool();
+    if (activeCleaningTool === "manageColumns") return renderManageColumnsTool();
     if (activeCleaningTool === "recipes") return renderRecipesTool();
     return null;
   }
 
-  function renderSplitCombineTool() {
+  function renderManageColumnsTool() {
     const operation = columnOperationMode === "split" ? splitDraft : combineDraft;
     const preview = columnOperationMode === "split" ? splitPreview : combinePreview;
     const operationValidation = validateSchemaOperation(columns, operation);
+    const createOperation = { ...createColumnDraft, column: createColumnDraft.column.trim() };
+    const createSchemaValidation = validateSchemaOperation(columns, createOperation);
+    const createValueValidation = validateCreateColumnValue(createOperation);
+    const createValidation = createSchemaValidation.valid ? createValueValidation : createSchemaValidation;
+    const deleteOperation = { ...deleteColumnsDraft, columns: [...deleteColumnsDraft.columns] };
+    const deleteValidation = validateSchemaOperation(columns, deleteOperation);
+    const deletedColumnSet = new Set(deleteOperation.columns);
+    const deletedRelationships = relationshipRules.filter((rule) => (
+      getRelationshipRuleColumns(rule).some((column) => deletedColumnSet.has(column))
+    ));
     return (
       <>
-        <div className="tool-mode-switch">
-          <button type="button" className={columnOperationMode === "split" ? "selected" : ""} onClick={() => setColumnOperationMode("split")}>Split a column</button>
-          <button type="button" className={columnOperationMode === "combine" ? "selected" : ""} onClick={() => setColumnOperationMode("combine")}>Combine columns</button>
+        <div className="tool-mode-switch manage-column-mode-switch">
+          <button type="button" className={columnOperationMode === "create" ? "selected" : ""} onClick={() => setColumnOperationMode("create")}>Create</button>
+          <button type="button" className={columnOperationMode === "delete" ? "selected" : ""} onClick={() => setColumnOperationMode("delete")}>Delete</button>
+          <button type="button" className={columnOperationMode === "split" ? "selected" : ""} onClick={() => setColumnOperationMode("split")}>Split</button>
+          <button type="button" className={columnOperationMode === "combine" ? "selected" : ""} onClick={() => setColumnOperationMode("combine")}>Combine</button>
         </div>
-        {columnOperationMode === "split" ? (
+        {columnOperationMode === "create" ? (
+          <div className="cleaning-tool-body">
+            <label>
+              <span>Column name</span>
+              <input value={createColumnDraft.column} onChange={(event) => setCreateColumnDraft((draft) => ({ ...draft, column: event.target.value }))} placeholder="New column" />
+            </label>
+            <label>
+              <span>Column type</span>
+              <select value={createColumnDraft.dataType} onChange={(event) => setCreateColumnDraft((draft) => ({ ...draft, dataType: event.target.value }))}>
+                {TYPE_OPTIONS.map((type) => <option key={type} value={type}>{type}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Starting values</span>
+              <select value={createColumnDraft.initialMode} onChange={(event) => setCreateColumnDraft((draft) => ({ ...draft, initialMode: event.target.value }))}>
+                <option value="empty">Leave every row empty</option>
+                <option value="fixed">Use one value for every row</option>
+              </select>
+            </label>
+            {createColumnDraft.initialMode === "fixed" && (
+              <label>
+                <span>Starting value</span>
+                <input value={createColumnDraft.initialValue} onChange={(event) => setCreateColumnDraft((draft) => ({ ...draft, initialValue: event.target.value }))} placeholder={`Value matching ${createColumnDraft.dataType}`} />
+              </label>
+            )}
+            <ToolPreview
+              valid={createValidation.valid}
+              error={createValidation.error}
+              summary={`"${createOperation.column}" will be added after ${columns.at(-1) ?? "the current columns"}`}
+            >
+              <div>{rows.length.toLocaleString()} rows will start {createOperation.initialMode === "fixed" ? `with "${createOperation.initialValue}"` : "empty"}</div>
+            </ToolPreview>
+            <ToolActions onCancel={() => setActiveCleaningTool("home")} onApply={applyCreateColumn} applyLabel="Create column" disabled={!createValidation.valid} />
+          </div>
+        ) : columnOperationMode === "delete" ? (
+          <div className="cleaning-tool-body">
+            <ColumnPicker
+              columns={columns}
+              selected={deleteColumnsDraft.columns}
+              onToggle={(column) => toggleToolColumn(setDeleteColumnsDraft, "columns", column)}
+              onSelectAll={() => setDeleteColumnsDraft((draft) => ({ ...draft, columns: [...columns] }))}
+              onSelectVisible={() => setDeleteColumnsDraft((draft) => ({ ...draft, columns: [...visibleColumns] }))}
+              label="Columns to delete"
+            />
+            <ToolPreview
+              valid={deleteValidation.valid}
+              error={deleteValidation.error}
+              summary={`${deleteColumnsDraft.columns.length.toLocaleString()} column${deleteColumnsDraft.columns.length === 1 ? "" : "s"} will be deleted`}
+            >
+              <div>{rows.length.toLocaleString()} rows will change</div>
+              {deletedRelationships.length > 0 && (
+                <div>{deletedRelationships.length.toLocaleString()} connected formula rule{deletedRelationships.length === 1 ? "" : "s"} will also be removed</div>
+              )}
+            </ToolPreview>
+            <ToolActions onCancel={() => setActiveCleaningTool("home")} onApply={applyDeleteColumns} applyLabel="Delete columns" disabled={!deleteValidation.valid} danger />
+          </div>
+        ) : columnOperationMode === "split" ? (
           <div className="cleaning-tool-body">
             <label><span>Source column</span><select value={splitDraft.sourceColumn} onChange={(event) => setSplitDraft((draft) => ({ ...draft, sourceColumn: event.target.value, outputColumns: [`${event.target.value} 1`, `${event.target.value} 2`] }))}><option value="">Choose a column</option>{columns.map((column) => <option key={column} value={column}>{column}</option>)}</select></label>
             <label><span>Split using</span><select value={splitDraft.separatorMode} onChange={(event) => setSplitDraft((draft) => ({ ...draft, separatorMode: event.target.value }))}><option value="whitespace">Spaces</option><option value="comma">Comma</option><option value="hyphen">Hyphen</option><option value="slash">Slash</option><option value="custom">Custom separator</option></select></label>
@@ -2668,7 +2852,7 @@ function App() {
                     </div>
                   )}
                   <details className="challenge-hints">
-                    <summary>Hints are free. Pride is expensive.</summary>
+                    <summary>Hints (may contain spoilers)</summary>
                     {activeChallenge.hints.map((hint) => <p key={hint}>{hint}</p>)}
                   </details>
                   {activeChallenge.credit && (
@@ -2750,6 +2934,26 @@ function App() {
                     <div><strong>Export when finished</strong><p><HintCode hint="Downloads the currently visible columns as a new CSV file.">Export CSV</HintCode> When you are done, all changes will be applied</p></div>
                   </li>
                 </ol>
+                <section className="tutorial-tricks">
+                  <div>
+                    <span className="section-label">Useful tricks</span>
+                    <strong>Easy to miss and very useful</strong>
+                  </div>
+                  <div className="tutorial-trick-grid">
+                    <article>
+                      <strong>Calculate separately within groups</strong>
+                      <p>In <HintCode hint="Opens automatic filling methods for detected empty or invalid cells">Fill invalid values</HintCode>, choose Median, Average, or Most common value and then choose a column under <code>Calculate within groups</code>. Challenge 4 uses Priority so every Priority gets its own median in one action</p>
+                    </article>
+                    <article>
+                      <strong>Missing does not always mean broken</strong>
+                      <p>Open <HintCode hint="Contains batch tools for cleaning the loaded data">Cleaning Tools</HintCode>, choose <code>Missing Values</code>, select a column, and change its Policy to <code>Allowed</code> when empty values are valid. Challenge 2 uses this for optional phone numbers</p>
+                    </article>
+                    <article>
+                      <strong>Change the table itself</strong>
+                      <p>Open <HintCode hint="Contains batch tools for cleaning the loaded data">Cleaning Tools</HintCode> then choose <code>Manage Columns</code> to create, delete, split, or combine columns and drag any table header when you want to move it. Undo can bring deleted columns back</p>
+                    </article>
+                  </div>
+                </section>
               </div>
             )}
           </section>
@@ -2772,10 +2976,6 @@ function App() {
                       You don't have to add equal sign '=' the assigned [Target Column] is what's on the left side of the equation</p>
                   </div>
                   <label>
-                    <span>Rule name (optional)</span>
-                    <input value={relationshipDraft.name} onChange={(event) => updateRelationshipDraft("name", event.target.value)} placeholder="Order total" />
-                  </label>
-                  <label>
                     <span>Target column</span>
                     <select value={relationshipDraft.targetColumn} onChange={(event) => updateRelationshipDraft("targetColumn", event.target.value)}>
                       <option value="">Choose target column</option>
@@ -2788,6 +2988,10 @@ function App() {
                   </label>
                   <div className="formula-tools">
                     <span className="field-label">Math symbols </span>
+                    <p>
+                      Formulas follow the normal order of operations<br />
+                      You can use your keyboard instead of the buttons and type numbers directly into the formula
+                    </p>
                     <div className="formula-token-picker" aria-label="Insert math symbols">
                       <button type="button" onClick={() => insertRelationshipToken("+")} title="Add">+ Add</button>
                       <button type="button" onClick={() => insertRelationshipToken("-")} title="Subtract or make the next value negative">- Subtract</button>
@@ -2797,7 +3001,6 @@ function App() {
                       <button type="button" onClick={() => insertRelationshipToken("(")} title="Open a grouped calculation">( Open</button>
                       <button type="button" onClick={() => insertRelationshipToken(")")} title="Close a grouped calculation">) Close</button>
                     </div>
-                    <p>All the symbols follows the order of operations also you can use the keyboard (you don't have to use the buttons), add a number directly in the formula when needed.</p>
                   </div>
                   <div className="formula-column-picker">
                     {columns.map((column) => (
@@ -2973,6 +3176,8 @@ function App() {
               paginationPageSize={100}
               rowSelection={GRID_ROW_SELECTION}
               onCellValueChanged={handleCellValueChanged}
+              onColumnMoved={handleColumnMoved}
+              suppressDragLeaveHidesColumns
               onCellClicked={(event) => {
                 if (event.colDef.field && event.colDef.field !== "__rowId") {
                   selectColumn(event.colDef.field);
@@ -3087,7 +3292,7 @@ function App() {
                 const record = hasCurrentChallengeRevision(challenge, savedRecord?.revision) ? savedRecord : null;
                 const hasSavedWorkspace = savedWorkspaceIds.includes(`challenge:${challenge.id}`);
                 return (
-                  <article className={`challenge-card ${challenge.accent}`} key={challenge.id}>
+                  <article className={`challenge-card ${challenge.accent} ${record?.complete ? "completed" : ""}`} key={challenge.id}>
                     <div className="challenge-card-topline">
                       <span>#{challenge.number}</span>
                       <span>{challenge.difficulty}</span>
@@ -3161,11 +3366,28 @@ function App() {
           </section>
         </div>
       )}
+      {isChallengeCelebrating && (
+        <div className="challenge-confetti" role="status" aria-label="Challenge complete">
+          {Array.from({ length: 48 }, (_, index) => (
+            <span
+              aria-hidden="true"
+              key={index}
+              style={{
+                "--confetti-delay": `${index % 8 * 24}ms`,
+                "--confetti-drift": `${(index % 9 - 4) * 22}px`,
+                "--confetti-left": `${(index * 37 + 9) % 100}%`,
+                "--confetti-turn": `${(index % 2 ? 1 : -1) * (380 + index * 17)}deg`,
+                backgroundColor: CHALLENGE_CONFETTI_COLORS[index % CHALLENGE_CONFETTI_COLORS.length],
+              }}
+            />
+          ))}
+        </div>
+      )}
       {isChallengeResultOpen && activeChallenge && challengeEvaluation && (
         <div className="challenge-result-backdrop" onMouseDown={() => setIsChallengeResultOpen(false)}>
           <section className="challenge-result" role="dialog" aria-modal="true" aria-labelledby="challenge-result-title" onMouseDown={(event) => event.stopPropagation()}>
             <span className="section-label">Dataset cleaned</span>
-            <h2 id="challenge-result-title">{activeChallenge.title} survived you</h2>
+            <h2 id="challenge-result-title">{activeChallenge.title}</h2>
             <div className="challenge-result-stars" aria-label={`${challengeEvaluation.stars} stars`}>{"*".repeat(challengeEvaluation.stars)}{"o".repeat(3 - challengeEvaluation.stars)}</div>
             <p>{challengeEvaluation.score}% complete in {challengeEvaluation.moves} recorded move{challengeEvaluation.moves === 1 ? "" : "s"}</p>
             <div className="challenge-result-actions">
@@ -3636,7 +3858,7 @@ function getCleaningToolTitle(tool) {
     missingValues: "Missing Values",
     duplicates: "Find Duplicates",
     textCleanup: "Text Cleanup",
-    splitCombine: "Split / Combine Columns",
+    manageColumns: "Manage Columns",
     recipes: "Cleaning Recipes",
   })[tool] ?? "Cleaning Tools";
 }
@@ -3648,7 +3870,7 @@ function getCleaningToolDescription(tool, visibleColumnCount) {
     missingValues: "Choose how blanks and null markers should behave in each column",
     duplicates: "Compare selected columns",
     textCleanup: "Fix extra spaces or change how text is capitalized",
-    splitCombine: "Split or combine columns",
+    manageColumns: "Create, delete, split, or combine columns",
     recipes: "Stores every action made automatically, for files that shares the same format/structure (WIP)",
   })[tool] ?? "";
 }
@@ -3706,41 +3928,6 @@ const DateCellEditor = forwardRef(function DateCellEditor(props, ref) {
     />
   );
 });
-
-function summarizeHistoryAction(action, index) {
-  const counts = countHistoryChanges(action);
-  const step = action.recipeStep ?? action.audit ?? {};
-  const columns = new Set([
-    ...(step.columns ?? []),
-    ...(step.column ? [step.column] : []),
-    ...(action.changes ?? []).map((change) => change.column),
-  ]);
-  const method = step.type === "fill"
-    ? `${step.method ?? "fill"}${step.groupBy ? ` by ${step.groupBy}` : ""}${step.orderBy ? ` ordered by ${step.orderBy}` : ""}`
-    : step.type ?? action.kind;
-  return {
-    Step: index + 1,
-    Time: action.occurredAt ?? "",
-    Action: action.label ?? action.kind,
-    Method: method,
-    Columns: [...columns].join(", "),
-    "Cells changed": counts.cells,
-    "Rows deleted": counts.rows,
-  };
-}
-
-function countHistoryChanges(action) {
-  if (action.kind === "compound") {
-    return (action.actions ?? []).reduce((total, child) => {
-      const childCounts = countHistoryChanges(child);
-      return { cells: total.cells + childCounts.cells, rows: total.rows + childCounts.rows };
-    }, { cells: 0, rows: 0 });
-  }
-  return {
-    cells: action.changes?.length ?? 0,
-    rows: action.kind === "deleteRows" ? action.rows?.length ?? 0 : 0,
-  };
-}
 
 function normalizeRow(row) {
   const normalized = {};
@@ -3816,6 +4003,8 @@ function mergeRelationshipRules(currentRules, recipeRules) {
 function getRecipeStepColumns(step) {
   if (["findReplace", "fill", "textCleanup", "deduplicate", "deleteInvalidRows"].includes(step.type)) return step.columns ?? [];
   if (step.type === "numericConversion") return [step.column].filter(Boolean);
+  if (step.type === "createColumn") return [];
+  if (step.type === "deleteColumns") return step.columns ?? [];
   if (step.type === "splitColumn") return [step.sourceColumn].filter(Boolean);
   if (step.type === "combineColumns") return step.sourceColumns ?? [];
   return [];
@@ -3823,6 +4012,8 @@ function getRecipeStepColumns(step) {
 
 function describeRecipeStep(step) {
   const columns = getRecipeStepColumns(step);
+  if (step.type === "createColumn") return `${step.column} as ${step.dataType}`;
+  if (step.type === "deleteColumns") return step.columns.join(", ");
   if (step.type === "splitColumn") return `${step.sourceColumn} into ${step.outputColumns.join(", ")}`;
   if (step.type === "combineColumns") return `${step.sourceColumns.join(", ")} into ${step.outputColumn}`;
   if (step.type === "numericConversion") return `${step.column} to ${step.targetType}`;
@@ -3970,7 +4161,7 @@ function validateRelationshipRule(rule, columns) {
   if (!columns.includes(rule.targetColumn)) return { valid: false, error: `Target column “${rule.targetColumn}” is not in this file.` };
   if (!String(rule.formula ?? "").trim()) return { valid: false, error: "Enter a formula." };
   try {
-    const parsed = parseRelationshipFormula(rule.formula);
+    const parsed = parseFormula(rule.formula);
     const unknownColumn = parsed.references.find((column) => !columns.includes(column));
     if (unknownColumn) return { valid: false, error: `Column “${unknownColumn}” is not in this file.` };
     if (parsed.references.includes(rule.targetColumn)) return { valid: false, error: "The target column cannot also be a formula input." };
@@ -3981,131 +4172,6 @@ function validateRelationshipRule(rule, columns) {
   }
 }
 
-function parseRelationshipFormula(formula) {
-  const tokens = tokenizeRelationshipFormula(String(formula ?? ""));
-  let index = 0;
-  const references = [];
-
-  function peek() {
-    return tokens[index];
-  }
-
-  function consume(type) {
-    const token = peek();
-    if (!token || (type && token.type !== type)) throw new Error("Formula syntax is invalid.");
-    index += 1;
-    return token;
-  }
-
-  function parsePrimary() {
-    const token = peek();
-    if (!token) throw new Error("Formula is incomplete.");
-    if (token.type === "number") {
-      consume("number");
-      return { type: "number", value: Number(token.value) };
-    }
-    if (token.type === "reference") {
-      consume("reference");
-      references.push(token.value);
-      return { type: "reference", value: token.value };
-    }
-    if (token.type === "(") {
-      consume("(");
-      const expression = parseAdditive();
-      consume(")");
-      return expression;
-    }
-    if (token.type === "-") {
-      consume("-");
-      return { type: "unary", operator: "-", value: parsePrimary() };
-    }
-    throw new Error("Expected a number, column reference, or opening parenthesis.");
-  }
-
-  function parseMultiplicative() {
-    let left = parsePrimary();
-    while (["*", "/", "%"].includes(peek()?.type)) {
-      const operator = consume().type;
-      left = { type: "binary", operator, left, right: parsePrimary() };
-    }
-    return left;
-  }
-
-  function parseAdditive() {
-    let left = parseMultiplicative();
-    while (["+", "-"].includes(peek()?.type)) {
-      const operator = consume().type;
-      left = { type: "binary", operator, left, right: parseMultiplicative() };
-    }
-    return left;
-  }
-
-  const ast = parseAdditive();
-  if (index !== tokens.length) throw new Error("Formula has an unexpected token.");
-  return { ast, references: [...new Set(references)] };
-}
-
-function tokenizeRelationshipFormula(formula) {
-  const tokens = [];
-  let index = 0;
-  while (index < formula.length) {
-    const character = formula[index];
-    if (/\s/.test(character)) {
-      index += 1;
-      continue;
-    }
-    if ("+-*/%()".includes(character)) {
-      tokens.push({ type: character });
-      index += 1;
-      continue;
-    }
-    if (character === "[") {
-      const closingIndex = formula.indexOf("]", index + 1);
-      if (closingIndex < 0) throw new Error("Column references need a closing ].");
-      const column = formula.slice(index + 1, closingIndex).trim();
-      if (!column) throw new Error("Column references cannot be empty.");
-      tokens.push({ type: "reference", value: column });
-      index = closingIndex + 1;
-      continue;
-    }
-    const numberMatch = formula.slice(index).match(/^(?:\d+(?:\.\d+)?|\.\d+)/);
-    if (numberMatch) {
-      tokens.push({ type: "number", value: numberMatch[0] });
-      index += numberMatch[0].length;
-      continue;
-    }
-    throw new Error(`Unsupported character “${character}”. Use column references like [Amount].`);
-  }
-  if (!tokens.length) throw new Error("Enter a formula.");
-  return tokens;
-}
-
-function evaluateRelationshipFormula(ast, row) {
-  if (ast.type === "number") return ast.value;
-  if (ast.type === "reference") {
-    const value = parseRelationshipNumber(row[ast.value]);
-    if (value === null) throw new Error(`Input “${ast.value}” is empty or not numeric.`);
-    return value;
-  }
-  if (ast.type === "unary") return -evaluateRelationshipFormula(ast.value, row);
-  const left = evaluateRelationshipFormula(ast.left, row);
-  const right = evaluateRelationshipFormula(ast.right, row);
-  if ((ast.operator === "/" || ast.operator === "%") && right === 0) throw new Error("Cannot divide by zero.");
-  if (ast.operator === "+") return left + right;
-  if (ast.operator === "-") return left - right;
-  if (ast.operator === "*") return left * right;
-  if (ast.operator === "/") return left / right;
-  return left % right;
-}
-
-function parseRelationshipNumber(value) {
-  if (isEmptyValue(value)) return null;
-  const normalized = String(value).trim().replaceAll(",", "");
-  if (!/^-?(?:\d+|\d*\.\d+)$/.test(normalized)) return null;
-  const numericValue = Number(normalized);
-  return Number.isFinite(numericValue) ? numericValue : null;
-}
-
 function parseNumericValueForConversion(value) {
   if (isEmptyValue(value)) return null;
   const normalized = String(value).trim().replaceAll(",", "");
@@ -4114,16 +4180,12 @@ function parseNumericValueForConversion(value) {
   return Number.isFinite(numericValue) ? numericValue : null;
 }
 
-function formatRelationshipNumber(value) {
-  return (Math.round((value + Number.EPSILON) * 100) / 100).toFixed(2);
-}
-
 function checkRelationshipRows(rows, rule, ast, columnRules) {
   const issues = [];
   rows.forEach((row, rowIndex) => {
     let calculatedValue;
     try {
-      calculatedValue = evaluateRelationshipFormula(ast, row);
+      calculatedValue = evaluateFormula(ast, row);
     } catch (error) {
       issues.push({
         id: `${rule.id}:${row.__rowId}:input`,
@@ -4137,7 +4199,7 @@ function checkRelationshipRows(rows, rule, ast, columnRules) {
       return;
     }
     const targetValue = row[rule.targetColumn];
-    const suggestedValue = formatRelationshipNumber(calculatedValue);
+    const suggestedValue = formatFormulaNumber(calculatedValue);
     if (isEmptyValue(targetValue)) {
       issues.push({
         id: `${rule.id}:${row.__rowId}:fill`, ruleId: rule.id, rowId: row.__rowId, row: rowIndex + 1,
@@ -4154,7 +4216,7 @@ function checkRelationshipRows(rows, rule, ast, columnRules) {
       });
       return;
     }
-    const numericTarget = parseRelationshipNumber(targetValue);
+    const numericTarget = parseFormulaNumber(targetValue);
     if (numericTarget === null) {
       issues.push({
         id: `${rule.id}:${row.__rowId}:target`, ruleId: rule.id, rowId: row.__rowId, row: rowIndex + 1,
@@ -4284,6 +4346,27 @@ function createColumnRule(type) {
     customPatternLabel: "",
     savedRegexId: "",
   });
+}
+
+function validateCreateColumnValue(operation) {
+  if (!TYPE_OPTIONS.includes(operation.dataType)) return { valid: false, error: "Choose a column type." };
+  if (operation.initialMode !== "fixed") return { valid: true, error: "" };
+  if (!String(operation.initialValue ?? "").trim()) return { valid: false, error: "Enter a starting value or choose empty." };
+  const rule = createColumnRule(operation.dataType);
+  const result = validateValue(operation.initialValue, rule);
+  return result.valid
+    ? { valid: true, error: "" }
+    : { valid: false, error: `The starting value does not match ${operation.dataType}.` };
+}
+
+function getRelationshipRuleColumns(rule) {
+  const columns = [rule.targetColumn].filter(Boolean);
+  try {
+    columns.push(...parseFormula(rule.formula).references);
+  } catch {
+    // Invalid drafts still depend on their selected target.
+  }
+  return [...new Set(columns)];
 }
 
 function getPresetsForType(type) {

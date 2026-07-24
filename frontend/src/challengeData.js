@@ -1,26 +1,27 @@
 export const CHALLENGES = [
   {
     id: "cafe-closing-time",
-    revision: 2,
+    revision: 3,
     number: 1,
     title: "Cafe Closing Time",
-    subtitle: "Someone let a kid near the sales spreadsheet",
+    subtitle: "A kid on the loose",
     difficulty: "Warm up",
     rowCount: 30,
     accent: "orange",
     parMoves: 8,
     story: [
-      "Today is Bring Your Kid to Work Day at the cafe and the manager left the sales spreadsheet open on their laptop",
-      "Five minutes later the kid discovered Backspace and started helping, now quantities prices and totals have vanished from random orders",
-      "Fix the missing numbers and make every bill add up before you get demoted to customer",
+      "Today is Bring Your Kid to Work Day at the cafe and somebody left the stock spreadsheet open",
+      "The kid deleted the closing stock column and replaced it with snack reviews because apparently the muffins needed feedback",
+      "Put the stock count back together and remove the reviews before you get demoted to customer",
     ],
     hints: [
-      "Three column relationships can recover whichever value is missing.",
-      "Scan again after applying the relationship fixes.",
+      "Opening Stock, Delivered, Sold, Wasted and Closing Stock should be Number columns",
+      "Create Closing Stock and use [Opening Stock] + [Delivered] - [Sold] - [Wasted]",
+      "Kid Notes does not belong in the final stock report",
     ],
     objectives: [
-      { id: "math", title: "Make every total add up", kind: "formula", target: "Total", left: "Quantity", right: "Unit Price", operator: "*", tolerance: 0.01 },
-      { id: "complete", title: "Leave no gaps in the three number columns", kind: "noMissing", columns: ["Quantity", "Unit Price", "Total"] },
+      { id: "closing-stock", title: "Rebuild the closing stock column", kind: "calculatedColumn", target: "Closing Stock", expectedType: "Number", formula: "[Opening Stock] + [Delivered] - [Sold] - [Wasted]", tolerance: 0.01 },
+      { id: "remove-notes", title: "Delete the kid reviews", kind: "columnsAbsent", columns: ["Kid Notes"] },
     ],
     rules: [
       { id: "keep-orders", title: "Keep every cafe order", kind: "rowCount", minimum: 30, maximum: 30 },
@@ -48,8 +49,9 @@ export const CHALLENGES = [
     ],
     objectives: [
       { id: "status-values", title: "Tame the status spellings", kind: "allowedValues", column: "Status", values: ["Active", "Paused", "Closed"] },
-      { id: "phone-optional", title: "Allow genuinely missing phone numbers", kind: "missingPolicy", column: "Phone", policy: "allowed", tokens: ["NULL", "N/A"] },
-      { id: "contacts-clean", title: "Clear the remaining contact issues", kind: "scanClean", columns: ["Email", "Phone", "Status"] },
+      { id: "phone-optional", title: "Allow genuinely missing phone numbers", kind: "missingPolicy", column: "Phone", policy: "allowed" },
+      { id: "emails-clean", title: "Fix the broken email addresses", kind: "scanClean", columns: ["Email"], expectedType: "Email" },
+      { id: "phones-clean", title: "Fix the invalid phone numbers", kind: "scanClean", columns: ["Phone"], expectedType: "Phone" },
     ],
     rules: [
       { id: "keep-leads", title: "Keep all ninety leads", kind: "rowCount", minimum: 90, maximum: 90 },
@@ -119,11 +121,11 @@ export const CHALLENGES = [
   },
   {
     id: "dataset-from-hell",
-    revision: 2,
+    revision: 3,
     number: 5,
     title: "Dataset From Hell",
     subtitle: "Eight thousand rows. Thirty bad ideas. One export button.",
-    difficulty: "Boss fight",
+    difficulty: "HELL",
     rowCount: 8000,
     accent: "red",
     parMoves: 30,
@@ -133,14 +135,19 @@ export const CHALLENGES = [
       "Engineering recovered the tables but the data came back cursed so fix it before management asks why admin123 was the real password",
     ],
     hints: [
-      "Configure null markers before deciding which blanks are real problems.",
-      "Relationships recover totals; bulk tools handle repeated text damage.",
+      "Configure null markers before deciding which blanks are real problems",
+      "Delete Legacy Total because the recovered values inside it cannot be trusted",
+      "Build Discount Amount first, then Tax Amount and finish with Final Charge because each formula needs the one before it",
+      "Scan does not detect duplicates, open Cleaning Tools and compare Row Key in Duplicates",
     ],
     objectives: [
-      { id: "boss-math", title: "Repair the order calculations", kind: "formula", target: "Order Total", left: "Quantity", right: "Unit Price", operator: "*", tolerance: 0.02 },
       { id: "boss-status", title: "Reduce Status to four real choices", kind: "allowedValues", column: "Status", values: ["Active", "Paused", "Closed", "Pending"] },
       { id: "boss-unique", title: "Remove duplicate row keys", kind: "unique", columns: ["Row Key"] },
-      { id: "boss-scan", title: "Clear issues from the core columns", kind: "scanClean", columns: ["Email", "Phone", "Order Date", "Quantity", "Unit Price", "Order Total", "Status"] },
+      { id: "boss-scan", title: "Clear issues from the core columns", kind: "scanClean", columns: ["Email", "Phone", "Order Date", "Gross Amount", "Discount Percent", "Shipping Fee", "Tax Percent", "Status"], expectedTypes: { Email: "Email", Phone: "Phone", "Order Date": "Date", "Gross Amount": "Number", "Discount Percent": "Number", "Shipping Fee": "Number", "Tax Percent": "Number", Status: "Category" } },
+      { id: "boss-legacy", title: "Delete the cursed old total", kind: "columnsAbsent", columns: ["Legacy Total"] },
+      { id: "boss-discount", title: "Calculate every discount", kind: "calculatedColumn", target: "Discount Amount", expectedType: "Number", formula: "[Gross Amount] * [Discount Percent] / 100", tolerance: 0.02 },
+      { id: "boss-tax", title: "Calculate tax after the discount", kind: "calculatedColumn", target: "Tax Amount", expectedType: "Number", formula: "([Gross Amount] - [Discount Amount]) * [Tax Percent] / 100", tolerance: 0.02 },
+      { id: "boss-final", title: "Build the final charge", kind: "calculatedColumn", target: "Final Charge", expectedType: "Number", formula: "[Gross Amount] - [Discount Amount] + [Tax Amount] + [Shipping Fee]", tolerance: 0.02 },
     ],
     rules: [
       { id: "boss-survivors", title: "Keep at least 7600 rows", kind: "rowCount", minimum: 7600 },
@@ -151,9 +158,9 @@ export const CHALLENGES = [
     id: "final-final-export",
     revision: 2,
     number: 6,
-    title: "The Final Final Export",
+    title: "The Final Export",
     subtitle: "Half a million rows and nobody remembers what any of them mean",
-    difficulty: "Real world boss",
+    difficulty: "HELL^2",
     rowCount: 541910,
     accent: "orange",
     parMoves: 20,
@@ -202,23 +209,23 @@ export function hasCurrentChallengeRevision(challenge, revision) {
 }
 
 function createCafeRows() {
-  const items = [["Espresso", 9], ["Croissant", 12.5], ["Iced tea", 14], ["Sandwich", 24]];
+  const items = ["Coffee beans", "Oat milk", "Croissants", "Paper cups", "Chocolate syrup"];
+  const kidReviews = ["Tastes suspicious", "Five stars", "Looks boring", "Needs more sugar"];
   return Array.from({ length: 30 }, (_, index) => {
-    const [item, price] = items[index % items.length];
-    const quantity = index % 4 + 1;
-    const row = {
-      "Order ID": `CAFE-${String(index + 1).padStart(3, "0")}`,
-      "Order Date": `2026-07-${String(index % 20 + 1).padStart(2, "0")}`,
-      Item: item,
-      Quantity: String(quantity),
-      "Unit Price": price.toFixed(2),
-      Total: (quantity * price).toFixed(2),
-      Shift: index % 2 ? "Evening" : "Morning",
+    const openingStock = 45 + (index % 8) * 7;
+    const delivered = 4 + (index * 3) % 17;
+    const sold = 8 + (index * 5) % 22;
+    const wasted = index % 4;
+    return {
+      "Stock Check ID": `CAFE-${String(index + 1).padStart(3, "0")}`,
+      "Stock Date": `2026-07-${String(index % 20 + 1).padStart(2, "0")}`,
+      Item: items[index % items.length],
+      "Opening Stock": String(openingStock),
+      Delivered: String(delivered),
+      Sold: String(sold),
+      Wasted: String(wasted),
+      "Kid Notes": kidReviews[index % kidReviews.length],
     };
-    if (index % 7 === 2) row.Total = "";
-    else if (index % 11 === 4) row.Quantity = "";
-    else if (index % 13 === 6) row["Unit Price"] = "";
-    return row;
   });
 }
 
@@ -286,11 +293,14 @@ function createHellRows() {
   const random = createRandom(666);
   const names = ["Maya Stone", "Omar Saleh", "Lina Khan", "Alex Martin", "Noor Aziz"];
   const statuses = ["Active", "Paused", "Closed", "Pending"];
-  const countries = [["Saudi Arabia", "Riyadh", "+966"], ["United States", "Austin", "+1"], ["Germany", "Berlin", "+49"]];
+  const countries = [["Saudi Arabia", "Riyadh", "+966", 15], ["United States", "Austin", "+1", 8.25], ["Germany", "Berlin", "+49", 19]];
+  const discountRates = [0, 5, 10, 15, 20];
+  const shippingFees = [0, 5, 7.5, 12];
   const rows = Array.from({ length: 8000 }, (_, index) => {
-    const [country, city, dial] = countries[index % countries.length];
-    const quantity = index % 9 + 1;
-    const price = 4.5 + (index % 31) * 1.75;
+    const [country, city, dial, taxPercent] = countries[index % countries.length];
+    const grossAmount = 80 + (index % 31) * 7.5;
+    const discountPercent = discountRates[index % discountRates.length];
+    const shippingFee = shippingFees[index % shippingFees.length];
     const name = names[index % names.length];
     const row = {
       "Source System": ["CRM", "Web Shop", "Legacy ERP", "POS Export"][index % 4],
@@ -302,9 +312,11 @@ function createHellRows() {
       Status: statuses[index % statuses.length],
       Country: country,
       City: city,
-      Quantity: String(quantity),
-      "Unit Price": price.toFixed(2),
-      "Order Total": (quantity * price).toFixed(2),
+      "Gross Amount": grossAmount.toFixed(2),
+      "Discount Percent": String(discountPercent),
+      "Shipping Fee": shippingFee.toFixed(2),
+      "Tax Percent": String(taxPercent),
+      "Legacy Total": (grossAmount + shippingFee).toFixed(2),
       Paid: index % 5 ? "yes" : "no",
       Notes: index % 19 ? "" : "Customer asked, politely, for a callback",
     };
@@ -312,9 +324,10 @@ function createHellRows() {
     if (index % 113 === 7) row.Phone = "not supplied";
     if (index % 127 === 9) row["Order Date"] = `${index % 28 + 1}/13/2025`;
     if (index % 89 === 11) row.Status = ` ${row.Status.toLowerCase()} `;
-    if (index % 101 === 13) row.Quantity = pick(["", "NULL", "many"], random);
-    if (index % 109 === 15) row["Order Total"] = "";
-    if (index % 137 === 17) row["Unit Price"] = "N/A";
+    if (index % 101 === 13) row["Gross Amount"] = pick(["", "NULL", "many"], random);
+    if (index % 109 === 15) row["Discount Percent"] = "";
+    if (index % 137 === 17) row["Shipping Fee"] = "N/A";
+    if (index % 149 === 19) row["Tax Percent"] = "tax";
     return row;
   });
   for (let index = 499; index < rows.length; index += 997) rows[index]["Row Key"] = rows[index - 1]["Row Key"];
