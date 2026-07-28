@@ -79,7 +79,7 @@ const VALIDATION_PRESETS = [
   { id: "number-positive", type: "Number", name: "Positive number" },
   { id: "integer-standard", type: "Integer", name: "Standard integer" },
   { id: "integer-positive", type: "Integer", name: "Positive integer" },
-  { id: "date-iso-dash", type: "Date", name: "YYYY-MM-DD" },
+  { id: "date-iso-dash", type: "Date", name: "YYYY-MM-DD (tutorial format)" },
   { id: "date-iso-slash", type: "Date", name: "YYYY/MM/DD" },
   { id: "date-us", type: "Date", name: "MM/DD/YYYY" },
   { id: "date-eu", type: "Date", name: "DD/MM/YYYY" },
@@ -5187,7 +5187,7 @@ function isInteger(value, presetId = "integer-standard") {
 
 function isDate(value, presetId = "date-iso-dash") {
   const text = String(value).trim();
-  if (presetId === "date-iso-dash") return validateDateParts(text, /^(\d{4})-(\d{1,2})-(\d{1,2})$/, [1, 2, 3]);
+  if (presetId === "date-iso-dash") return validateDateParts(text, /^(\d{4})-(\d{2})-(\d{2})$/, [1, 2, 3]);
   if (presetId === "date-iso-slash") return validateDateParts(text, /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/, [1, 2, 3]);
   if (presetId === "date-us") return validateDateParts(text, /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, [3, 1, 2]);
   if (presetId === "date-eu") return validateDateParts(text, /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, [3, 2, 1]);
