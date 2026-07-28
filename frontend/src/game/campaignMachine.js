@@ -7,16 +7,18 @@ export const FREE_CLEAN_PREVIEW = [
   "Nothing is graded and every tool is available so you can experiment or clean a real file",
 ];
 
-export function getBootMachineState(progress, savedWorkspaceIds = [], sessionInserted = false) {
+export function getBootMachineState(progress, savedWorkspaceIds = [], sessionInserted = false, sessionEjected = false) {
   const complete = isBootComplete(progress);
   const saved = savedWorkspaceIds.includes(BOOT_WORKSPACE_ID);
-  const phase = complete
-    ? "online"
-    : saved
-      ? "incomplete"
-      : sessionInserted
-        ? "ready"
-        : "waiting";
+  const phase = sessionEjected
+    ? "waiting"
+    : complete
+      ? "online"
+      : saved
+        ? "incomplete"
+        : sessionInserted
+          ? "ready"
+          : "waiting";
   return {
     complete,
     saved,

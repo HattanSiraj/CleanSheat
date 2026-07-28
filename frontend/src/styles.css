@@ -4379,6 +4379,33 @@ select option:checked {
   font: 700 0.43rem "Space Mono", monospace;
 }
 
+.boot-drive-footer {
+  align-items: center;
+  display: flex;
+  gap: 0.35rem;
+  justify-content: space-between;
+}
+
+.boot-eject-button {
+  background: #c9c3b5;
+  border: 2px solid #252d2a;
+  box-shadow: 2px 2px 0 rgba(16, 45, 39, 0.4);
+  color: #252d2a;
+  font: 700 0.4rem "Space Mono", monospace;
+  min-height: 18px;
+  padding: 0.12rem 0.28rem;
+}
+
+.boot-eject-button:hover:not(:disabled) {
+  background: var(--color-orange-bright);
+  color: #171c1a;
+}
+
+.boot-eject-button:active:not(:disabled) {
+  box-shadow: none;
+  transform: translate(2px, 2px);
+}
+
 .boot-drive-light {
   background: #373b38;
   border: 1px solid var(--retro-shadow-dark);
@@ -4429,6 +4456,19 @@ select option:checked {
   left: 13%;
   position: absolute;
   width: 74%;
+}
+
+.boot-computer.ejecting .boot-inserted-disk {
+  animation: bootDiskEject 420ms steps(5, end) forwards;
+}
+
+.machine-screen-message.ejecting strong {
+  color: var(--color-orange-bright);
+}
+
+.machine-screen-message.ejecting .machine-boot-lines i {
+  animation-direction: reverse;
+  background: var(--color-orange-bright);
 }
 
 .machine-output-port {
@@ -4809,6 +4849,12 @@ select option:checked {
 
 .challenge-module.complete {
   background: #b8d6ca;
+}
+
+.campaign-screen.locked .challenge-module.complete {
+  background: #817f78;
+  color: #d0cdc3;
+  filter: grayscale(0.7);
 }
 
 .challenge-module.selected {
@@ -5207,6 +5253,12 @@ select option:checked {
 @keyframes bootDriveReject {
   0%, 100% { transform: translateX(0); }
   50% { transform: translateX(3px); }
+}
+
+@keyframes bootDiskEject {
+  0% { transform: translateY(0); }
+  70% { transform: translateY(-8px); }
+  100% { transform: translateY(-20px); }
 }
 
 @keyframes machineModuleWake {

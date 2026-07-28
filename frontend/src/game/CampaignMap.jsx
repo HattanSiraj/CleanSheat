@@ -10,6 +10,7 @@ import { isBootComplete } from "./progress.js";
 import { DesktopJunkPhysics } from "./DesktopJunkPhysics.jsx";
 
 const BOOT_ANIMATION_MS = 1050;
+const EJECT_ANIMATION_MS = 420;
 const MODULE_POWER_DELAY_MS = 180;
 const LOCKED_REACTION_MS = 1500;
 
@@ -46,6 +47,8 @@ export function CampaignMap({
   const onSoundRef = useRef(onSound);
   const onPowerSequenceCompleteRef = useRef(onPowerSequenceComplete);
   const [sessionDiskInserted, setSessionDiskInserted] = useState(false);
+  const [sessionDiskEjected, setSessionDiskEjected] = useState(false);
+  const [manualPowerSequenceSignal, setManualPowerSequenceSignal] = useState(0);
   const [bootPhase, setBootPhase] = useState("waiting");
   const [bootDriveStatus, setBootDriveStatus] = useState("");
   const [machineAlert, setMachineAlert] = useState(null);
@@ -64,9 +67,15 @@ export function CampaignMap({
   onSoundRef.current = onSound;
   onPowerSequenceCompleteRef.current = onPowerSequenceComplete;
 
-  const permanentMachineState = getBootMachineState(progress, savedWorkspaceIds, sessionDiskInserted);
-  const diskInserted = permanentMachineState.diskInserted || bootPhase === "booting";
-  const powerSequenceActive = bootComplete && poweredCount < missions.length;
+  const permanentMachineState = getBootMachineState(
+    progress,
+    savedWorkspaceIds,
+    sessionDiskInserted,
+    sessionDiskEjected,
+  );
+  const diskInserted = permanentMachineState.diskInserted || ["booting", "ejecting"].includes(bootPhase);
+  const machinePowered = bootComplete && diskInserted && !["booting", "ejecting"].includes(bootPhase);
+  const powerSequenceActive = machinePowered && poweredCount < missions.length;
   const selectedChallenge = challenges.find((challenge) => challenge.id === selectedChallengeId)
     ?? tutorial
     ?? challenges[0];
@@ -81,10 +90,11 @@ export function CampaignMap({
   }, []);
 
   useEffect(() => {
-    if (bootComplete) setBootPhase("online");
+    if (sessionDiskEjected) setBootPhase("waiting");
+    else if (bootComplete) setBootPhase("online");
     else if (bootSaved) setBootPhase("incomplete");
     else if (!sessionDiskInserted) setBootPhase("waiting");
-  }, [bootComplete, bootSaved, sessionDiskInserted]);
+  }, [bootComplete, bootSaved, sessionDiskEjected, sessionDiskInserted]);
 
   useEffect(() => {
     if (selectionTouchedRef.current) return;
@@ -92,13 +102,15 @@ export function CampaignMap({
   }, [bootComplete, challenges, progress, savedWorkspaceIds]);
 
   useEffect(() => {
-    if (!bootComplete) {
+    if (!machinePowered) {
       setPoweredCount(0);
       return undefined;
     }
-    if (!powerSequenceSignal || reducedMotion) {
+    const shouldAnimate = Boolean(powerSequenceSignal || manualPowerSequenceSignal);
+    if (!shouldAnimate || reducedMotion) {
       setPoweredCount(missions.length);
       if (powerSequenceSignal) onPowerSequenceCompleteRef.current?.();
+      if (manualPowerSequenceSignal) setManualPowerSequenceSignal(0);
       return undefined;
     }
 
@@ -113,16 +125,17 @@ export function CampaignMap({
         timerIds.push(window.setTimeout(powerNextModule, MODULE_POWER_DELAY_MS));
       } else {
         timerIds.push(window.setTimeout(() => {
-          onPowerSequenceCompleteRef.current?.();
+          if (powerSequenceSignal) onPowerSequenceCompleteRef.current?.();
+          if (manualPowerSequenceSignal) setManualPowerSequenceSignal(0);
         }, MODULE_POWER_DELAY_MS));
       }
     };
     timerIds.push(window.setTimeout(powerNextModule, 280));
     return () => timerIds.forEach((timerId) => window.clearTimeout(timerId));
-  }, [bootComplete, missions.length, powerSequenceSignal, reducedMotion]);
+  }, [machinePowered, manualPowerSequenceSignal, missions.length, powerSequenceSignal, reducedMotion]);
 
   useEffect(() => {
-    const unpoweredMissions = missions.filter((_, index) => !bootComplete || index >= poweredCount);
+    const unpoweredMissions = missions.filter((_, index) => !machinePowered || index >= poweredCount);
     if (reducedMotion || !unpoweredMissions.length) {
       setPowerLeakModuleId("");
       return undefined;
@@ -157,7 +170,7 @@ export function CampaignMap({
       if (pulseTimer) window.clearTimeout(pulseTimer);
       if (clearTimer) window.clearTimeout(clearTimer);
     };
-  }, [bootComplete, missions.length, poweredCount, reducedMotion]);
+  }, [machinePowered, missions.length, poweredCount, reducedMotion]);
 
   useLayoutEffect(() => {
     const machine = machineRef.current;
@@ -223,15 +236,42 @@ export function CampaignMap({
     if (diskInserted || !tutorial) return;
     clearBootTimers();
     const bootDelay = reducedMotion ? 80 : BOOT_ANIMATION_MS;
-    setSessionDiskInserted(true);
     setBootDriveStatus("");
     setMachineAlert(null);
     setBootPhase("booting");
     onSoundRef.current?.("machineBoot");
     bootTimersRef.current.push(window.setTimeout(() => {
-      setBootPhase("ready");
-      onStart(tutorial.id);
+      setSessionDiskInserted(true);
+      setSessionDiskEjected(false);
+      if (bootComplete) {
+        setBootPhase("online");
+        setManualPowerSequenceSignal((current) => current + 1);
+        return;
+      }
+      setBootPhase(bootSaved ? "incomplete" : "ready");
+      if (bootSaved) onContinue(tutorial.id);
+      else onStart(tutorial.id);
     }, bootDelay));
+  }
+
+  function ejectBootDisk() {
+    if (!diskInserted || ["booting", "ejecting"].includes(bootPhase)) return;
+    clearBootTimers();
+    if (lockedTimerRef.current) window.clearTimeout(lockedTimerRef.current);
+    if (machineAlertTimerRef.current) window.clearTimeout(machineAlertTimerRef.current);
+    setBootDriveStatus("");
+    setMachineAlert(null);
+    setNoPowerChallengeId("");
+    setIsFreeCleanSelected(false);
+    setPoweredCount(0);
+    setBootPhase("ejecting");
+    onSoundRef.current?.("floppyEject");
+    const ejectDelay = reducedMotion ? 80 : EJECT_ANIMATION_MS;
+    bootTimersRef.current.push(window.setTimeout(() => {
+      setSessionDiskInserted(false);
+      setSessionDiskEjected(true);
+      setBootPhase("waiting");
+    }, ejectDelay));
   }
 
   function showMachineAlert(kind, fileName = "") {
@@ -244,7 +284,7 @@ export function CampaignMap({
   }
 
   function selectModule(challenge, moduleIndex) {
-    const powered = bootComplete && moduleIndex < poweredCount;
+    const powered = machinePowered && moduleIndex < poweredCount;
     if (!powered) {
       if (lockedTimerRef.current) window.clearTimeout(lockedTimerRef.current);
       setNoPowerChallengeId(challenge.id);
@@ -262,6 +302,7 @@ export function CampaignMap({
   }
 
   function selectTutorial() {
+    if (!diskInserted || ["booting", "ejecting"].includes(bootPhase)) return;
     selectionTouchedRef.current = true;
     setNoPowerChallengeId("");
     setIsFreeCleanSelected(false);
@@ -270,6 +311,7 @@ export function CampaignMap({
   }
 
   function selectFreeClean() {
+    if (sessionDiskEjected || ["booting", "ejecting"].includes(bootPhase)) return;
     selectionTouchedRef.current = true;
     setNoPowerChallengeId("");
     setIsFreeCleanSelected(true);
@@ -278,7 +320,7 @@ export function CampaignMap({
 
   function renderChallengeActions(challenge) {
     if (!challenge) return null;
-    const state = getChallengeModuleState(challenge, progress, savedWorkspaceIds, bootComplete);
+    const state = getChallengeModuleState(challenge, progress, savedWorkspaceIds, machinePowered);
     if (state.locked) return null;
     if (challenge.tutorial && !diskInserted) return null;
     if (state.saved) {
@@ -317,15 +359,16 @@ export function CampaignMap({
         </div>
       );
     }
-    if (bootPhase === "booting" || powerSequenceActive) {
+    if (["booting", "ejecting"].includes(bootPhase) || powerSequenceActive) {
+      const ejecting = bootPhase === "ejecting";
       return (
-        <div className="machine-screen-message booting" aria-live="polite">
-          <span>{bootPhase === "booting" ? "CLEANOS BIOS 0.6" : "POWER BUS ONLINE"}</span>
-          <strong>{bootPhase === "booting" ? "READING BOOT DISK" : "ROUTING POWER"}</strong>
+        <div className={`machine-screen-message ${ejecting ? "ejecting" : "booting"}`} aria-live="polite">
+          <span>{ejecting ? "REMOVABLE MEDIA" : bootPhase === "booting" ? "CLEANOS BIOS 0.6" : "POWER BUS ONLINE"}</span>
+          <strong>{ejecting ? "CUTTING POWER" : bootPhase === "booting" ? "READING BOOT DISK" : "ROUTING POWER"}</strong>
           <div className="machine-boot-lines" aria-hidden="true">
             <i /><i /><i /><i />
           </div>
-          <p>{bootPhase === "booting" ? "Please pretend this is normal" : `${poweredCount}/${missions.length} modules awake`}</p>
+          <p>{ejecting ? "Please wait while everything forgets how electricity works" : bootPhase === "booting" ? "Please pretend this is normal" : `${poweredCount}/${missions.length} modules awake`}</p>
         </div>
       );
     }
@@ -364,7 +407,7 @@ export function CampaignMap({
     }
 
     const challenge = bootComplete ? selectedChallenge : tutorial;
-    const state = getChallengeModuleState(challenge, progress, savedWorkspaceIds, bootComplete);
+    const state = getChallengeModuleState(challenge, progress, savedWorkspaceIds, machinePowered);
     const status = challenge.tutorial && !bootComplete
       ? bootSaved ? "BOOT INCOMPLETE" : "BOOT DISK READY"
       : state.status;
@@ -389,7 +432,7 @@ export function CampaignMap({
   }
 
   return (
-    <div className={`campaign-screen ${bootComplete ? "booted" : "locked"} ${powerSequenceActive ? "powering-up" : ""}`}>
+    <div className={`campaign-screen ${machinePowered ? "booted" : "locked"} ${powerSequenceActive ? "powering-up" : ""}`}>
       <header className="campaign-menu-bar">
         <div>
           <span className="campaign-status-light" />
@@ -420,10 +463,16 @@ export function CampaignMap({
 
           <div className="campaign-intro">
             <span className="section-label">System recovery</span>
-            <h1 id="campaign-title">{bootComplete ? "Pick the next broken module" : "This machine forgot how to start"}</h1>
-            <p>{bootComplete
+            <h1 id="campaign-title">{machinePowered
+              ? "Pick the next broken module"
+              : sessionDiskEjected
+                ? "You turned the entire machine off"
+                : "This machine forgot how to start"}</h1>
+            <p>{machinePowered
               ? "Choose a file module and inspect it on the main screen"
-              : "Find the boot disk and wake up the rest of the machine"}</p>
+              : sessionDiskEjected
+                ? "Find the boot disk and put it back before anyone notices"
+                : "Find the boot disk and wake up the rest of the machine"}</p>
           </div>
 
           <div ref={machineRef} className="campaign-machine">
@@ -434,9 +483,9 @@ export function CampaignMap({
               aria-hidden="true"
             >
               {cableGeometry.paths.map((cable, index) => {
-                const powered = bootComplete && index < poweredCount;
+                const powered = machinePowered && index < poweredCount;
                 const powering = powerSequenceActive && index === poweredCount - 1;
-                const selected = selectedChallengeId === cable.id;
+                const selected = powered && selectedChallengeId === cable.id;
                 const error = noPowerChallengeId === cable.id;
                 return (
                   <g
@@ -473,8 +522,8 @@ export function CampaignMap({
                   <div className="boot-monitor-footer" aria-hidden="true">
                     <span className="boot-monitor-vents"><i /><i /><i /><i /><i /><i /><i /></span>
                     <div className="boot-monitor-controls">
-                      <small>{bootComplete ? "READY" : "STBY"}</small>
-                      <span className={bootComplete ? "online" : ""} />
+                      <small>{machinePowered ? "READY" : "STBY"}</small>
+                      <span className={machinePowered ? "online" : ""} />
                       <i /><i />
                     </div>
                   </div>
@@ -488,6 +537,7 @@ export function CampaignMap({
                     type="button"
                     className={`boot-selector ${selectedChallengeId === tutorial?.id && !isFreeCleanSelected ? "selected" : ""}`}
                     onClick={selectTutorial}
+                    disabled={!diskInserted || ["booting", "ejecting"].includes(bootPhase)}
                     data-game-sound="custom"
                   >
                     <span>BOOT 0</span>
@@ -502,6 +552,7 @@ export function CampaignMap({
                     type="button"
                     className={`boot-selector free-clean-selector ${isFreeCleanSelected ? "selected" : ""}`}
                     onClick={selectFreeClean}
+                    disabled={sessionDiskEjected || ["booting", "ejecting"].includes(bootPhase)}
                     data-game-sound="custom"
                   >
                     <span>UTILITY</span>
@@ -516,18 +567,31 @@ export function CampaignMap({
                 <div className="boot-drive-panel">
                   <span className={`boot-drive-light ${diskInserted ? "active" : ""}`} />
                   <div ref={driveRef} className={`boot-floppy-drive ${bootDriveStatus}`}>
-                    <span>{diskInserted ? "DISK LOADED" : "INSERT DISK"}</span>
+                    <span>{bootPhase === "ejecting" ? "EJECTING" : diskInserted ? "DISK LOADED" : "INSERT DISK"}</span>
                     {diskInserted && <i className="boot-inserted-disk" aria-hidden="true" />}
                   </div>
-                  <small>3.5 CLEAN DRIVE</small>
+                  <div className="boot-drive-footer">
+                    <small>3.5 CLEAN DRIVE</small>
+                    {diskInserted && (
+                      <button
+                        type="button"
+                        className="boot-eject-button"
+                        onClick={ejectBootDisk}
+                        disabled={["booting", "ejecting"].includes(bootPhase)}
+                        data-game-sound="custom"
+                      >
+                        EJECT
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <span ref={outputPortRef} className={`machine-output-port ${bootComplete ? "powered" : ""}`} aria-hidden="true">
+                <span ref={outputPortRef} className={`machine-output-port ${machinePowered ? "powered" : ""}`} aria-hidden="true">
                   OUT
                 </span>
                 <div className="boot-base-diagnostics" aria-hidden="true">
                   <strong>SYS BUS</strong>
                   <span className="boot-base-meter"><i /><i /><i /><i /><i /><i /><i /><i /></span>
-                  <small>{bootComplete ? "RAM 640K OK" : diskInserted ? "READING MEDIA" : "WAITING FOR DISK"}</small>
+                  <small>{machinePowered ? "RAM 640K OK" : diskInserted ? "READING MEDIA" : "WAITING FOR DISK"}</small>
                   <span className="boot-base-vents"><i /><i /><i /><i /><i /></span>
                 </div>
               </div>
@@ -543,16 +607,16 @@ export function CampaignMap({
                 <span className="module-bank-fans" aria-hidden="true"><i /><i /></span>
                 <div className="module-bank-state">
                   <span className="module-bank-lights" aria-hidden="true"><i /><i /><i /><i /></span>
-                  <strong>{bootComplete ? "ONLINE" : "NO POWER"}</strong>
+                  <strong>{machinePowered ? "ONLINE" : "NO POWER"}</strong>
                 </div>
               </div>
               <span className="module-bank-rail rail-left" aria-hidden="true"><i /><i /><i /><i /><i /><i /></span>
               <span className="module-bank-rail rail-right" aria-hidden="true"><i /><i /><i /><i /><i /><i /></span>
               <div className="challenge-module-grid">
                 {missions.map((challenge, index) => {
-                  const state = getChallengeModuleState(challenge, progress, savedWorkspaceIds, bootComplete);
-                  const powered = bootComplete && index < poweredCount;
-                  const selected = selectedChallengeId === challenge.id && !isFreeCleanSelected && !noPowerChallengeId;
+                  const state = getChallengeModuleState(challenge, progress, savedWorkspaceIds, machinePowered);
+                  const powered = machinePowered && index < poweredCount;
+                  const selected = powered && selectedChallengeId === challenge.id && !isFreeCleanSelected && !noPowerChallengeId;
                   const reacting = noPowerChallengeId === challenge.id;
                   return (
                     <button
@@ -595,7 +659,7 @@ export function CampaignMap({
               <div className="module-bank-footer" aria-hidden="true">
                 <span>DATA BUS A</span>
                 <span className="module-bank-bus"><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /></span>
-                <strong>{bootComplete ? "LINKED" : "ISOLATED"}</strong>
+                <strong>{machinePowered ? "LINKED" : "ISOLATED"}</strong>
               </div>
             </section>
           </div>
@@ -613,7 +677,7 @@ export function CampaignMap({
       </div>
 
       <footer className="campaign-taskbar">
-        <span>{bootComplete
+        <span>{machinePowered
           ? `${Object.values(progress.records).filter((record) => record.complete).length}/${challenges.length} files restored`
           : diskInserted ? "BOOT_SEQUENCE.dsk loaded" : "BOOT DISK required"}</span>
       </footer>

@@ -119,6 +119,10 @@ const SOUND_SEQUENCES = {
     { frequency: 120, endFrequency: 82, duration: 0.08, type: "square", volume: 0.05 },
     { frequency: 520, delay: 0.09, duration: 0.045, type: "square", volume: 0.045 },
   ],
+  floppyEject: [
+    { frequency: 520, endFrequency: 180, duration: 0.09, type: "square", volume: 0.045 },
+    { frequency: 105, delay: 0.08, duration: 0.12, type: "sawtooth", volume: 0.04 },
+  ],
   bootTrash: [
     { frequency: 640, endFrequency: 95, duration: 0.3, type: "sawtooth", volume: 0.065 },
     { frequency: 115, delay: 0.12, duration: 0.1, type: "square", volume: 0.055 },

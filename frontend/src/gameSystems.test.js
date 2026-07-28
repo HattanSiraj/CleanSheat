@@ -123,6 +123,12 @@ test("boot machine state follows the tutorial save and completion record", () =>
     records: { "boot-sequence": { complete: true, grade: "A" } },
   };
   assert.equal(getBootMachineState(complete).phase, "online");
+  assert.deepEqual(getBootMachineState(complete, [], false, true), {
+    complete: true,
+    saved: false,
+    diskInserted: false,
+    phase: "waiting",
+  });
 });
 
 test("Free Clean has a two line hover preview", () => {

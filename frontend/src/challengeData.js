@@ -184,7 +184,8 @@ export const CHALLENGES = [
       "Clean the contacts and calm down the Status column and remember that some people simply did not leave a phone number",
     ],
     hints: [
-      "Lead ID follows LEAD-1000 and Name can be split on its space",
+      "Lead ID should look like LEAD-1000",
+      "Split Name on the space into First Name and Last Initial",
       "Status should only contain Active, Paused, or Closed",
       "Phone is optional here and NULL or N/A should count as missing",
     ],
@@ -210,7 +211,7 @@ export const CHALLENGES = [
     },
     objectives: [
       { id: "lead-ids", title: "Repair the lead IDs", kind: "patternMatch", column: "Lead ID", pattern: "^LEAD-[0-9]{4}$" },
-      { id: "split-names", title: "Split every lead name", kind: "transformedColumns", operation: "split", source: "Name", outputs: ["First Name", "Last Initial"], separator: "whitespace" },
+      { id: "split-names", title: "Split Name into First Name and Last Initial", kind: "transformedColumns", operation: "split", source: "Name", outputs: ["First Name", "Last Initial"], separator: "whitespace" },
       { id: "emails-clean", title: "Fix the broken email addresses", kind: "scanClean", columns: ["Email"], expectedType: "Email" },
       { id: "phones-clean", title: "Fix the invalid phone numbers", kind: "scanClean", columns: ["Phone"], expectedType: "Phone" },
       { id: "phone-optional", title: "Allow genuinely missing phone numbers", kind: "missingPolicy", column: "Phone", policy: "allowed", tokens: ["NULL", "N/A"] },
