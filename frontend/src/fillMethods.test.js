@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { calculateColumnFill, calculateMultiColumnCustomFill } from "./fillMethods.js";
+import { calculateColumnFill, calculateMultiColumnCustomFill, getFillMethodsForType } from "./fillMethods.js";
 
 const validNumber = (value) => /^-?\d+(?:\.\d+)?$/.test(String(value));
 const validText = (value) => ["A", "B"].includes(value);
@@ -96,4 +96,34 @@ test("custom fill supports multiple columns", () => {
   ], { scope: "both", customValue: "Unknown" }, true);
   assert.equal(result.changeCount, 2);
   assert.deepEqual(result.changes.map((change) => change.column), ["first", "second"]);
+});
+
+test("date columns offer separate raw value and date picker fill methods", () => {
+  const methodIds = getFillMethodsForType("Date").map((method) => method.id);
+  assert.ok(methodIds.includes("custom"));
+  assert.ok(methodIds.includes("customDate"));
+
+  const rows = [{ value: "" }, { value: "broken" }];
+  const result = calculateColumnFill(rows, {
+    column: "value",
+    type: "Date",
+    method: "customDate",
+    scope: "both",
+    customValue: "2026-07-27",
+    isValid: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value),
+  }, true);
+  assert.deepEqual(result.changes.map((change) => change.after), ["2026-07-27", "2026-07-27"]);
+});
+
+test("custom date requires the user to pick a date", () => {
+  const result = calculateColumnFill([{ value: "" }], {
+    column: "value",
+    type: "Date",
+    method: "customDate",
+    scope: "both",
+    customValue: "",
+    isValid: () => false,
+  }, true);
+  assert.equal(result.valid, false);
+  assert.equal(result.error, "Choose a date.");
 });

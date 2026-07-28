@@ -1,4 +1,4 @@
-import React, { forwardRef, useDeferredValue, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import React, { forwardRef, useDeferredValue, useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AgGridReact } from "ag-grid-react";
 import Papa from "papaparse";
@@ -35,6 +35,33 @@ import { evaluateFormula, formatFormulaNumber, parseFormula, parseFormulaNumber 
 import { CHALLENGES, getChallenge, hasCurrentChallengeRevision } from "./challengeData.js";
 import { evaluateChallenge } from "./challengeEngine.js";
 import { deleteWorkspace, loadWorkspace, saveWorkspace } from "./workspaceStorage.js";
+import { findNewAchievements } from "./game/achievements.js";
+import { playGameSound, readAudioSettings, unlockAudio, writeAudioSettings } from "./game/audio.js";
+import { CampaignMap } from "./game/CampaignMap.jsx";
+import { Clipbit } from "./game/Clipbit.jsx";
+import { CleaningFeedbackLayer, EffectsControl } from "./game/CleaningFeedback.jsx";
+import { DataHealthMap } from "./game/DataHealthMap.jsx";
+import {
+  INITIAL_FEEDBACK_STATE,
+  createActionFeedback,
+  createScanFeedback,
+  feedbackReducer,
+  readEffectsMode,
+  shouldReduceEffects,
+  writeEffectsMode,
+} from "./game/feedback.js";
+import { AchievementToast, AchievementsDialog, ScanOverlay, SoundControls } from "./game/GameOverlays.jsx";
+import { OfficeChat } from "./game/OfficeChat.jsx";
+import { getOfficeMessage } from "./game/officeMessages.js";
+import { GAME_PROGRESS_KEY, readGameProgress, recordChallengeResult, writeGameProgress } from "./game/progress.js";
+import {
+  calculateChallengeScore,
+  createRunStats,
+  getActionChangeSize,
+  getDeletedRowCount,
+  isScoreableAction,
+  normalizeRunStats,
+} from "./game/scoring.js";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-quartz.css";
 import "./styles.css";
@@ -80,6 +107,73 @@ const RELATIONSHIP_STORAGE_KEY = "cleansheet.column-relationships";
 const RELATIONSHIP_TOLERANCE = 0.01;
 const HISTORY_LIMIT = 25;
 const CHALLENGE_CONFETTI_COLORS = ["#ef7b2d", "#49c5b6", "#f6be8e", "#3f7f91", "#f7f2e8"];
+const CLIPBIT_TIP_INTERVAL = 6500;
+const CLIPBIT_FILE_RAGE_COUNT = 4;
+const CLIPBIT_FILE_RAGE_WINDOW = 15000;
+const VIEWPORT_FEEDBACK_KINDS = new Set(["scan-clean", "scan-error", "objective", "combo", "victory"]);
+const CLIPBIT_CAMPAIGN_TIPS = [
+  "TIP // Boot Sequence unlocks every challenge after one successful cleanup",
+  "TIP // Free Clean gives you access to all the data cleaning tools on your own CSV files",
+  "TIP // Secret achievements stay hidden until you accidentally do something suspicious",
+];
+const CLIPBIT_CAMPAIGN_NONSENSE = [
+  "Did you know that clippy is copy righted?",
+  "The recycle bin accepts files and poor decisions",
+  "A file named final final usually means somebody has given up",
+  "Clipbit has no medical insurance so please aim carefully",
+  "The desktop is held together by pixels and unreasonable confidence",
+  "Completed files change color because even spreadsheets deserve closure",
+];
+const CLIPBIT_WORKSPACE_TIPS = [
+  "TIP // Scan checks every visible cell so hide columns you are not working on",
+  "TIP // Click a column name to change its type and validation rules",
+  "TIP // Category columns turn cell editing into a dropdown with allowed choices",
+  "TIP // Fill invalid values can use averages medians modes distributions and more",
+  "TIP // Formula rules follow normal math order and parentheses go first",
+  "TIP // Saved Regex rules can be reused on any matching column",
+  "TIP // Cleaning Tools can split combine create delete and rearrange columns",
+  "TIP // Duplicate checks can compare one column or several columns together",
+  "TIP // Undo works after bulk cleaning so experimenting is allowed",
+  "TIP // Scan again after a cleanup to refresh objectives and the corruption meter",
+  "TIP // Hints cost a few score points but they never block challenge completion",
+  "TIP // If everything suddenly fails check the column type before blaming the dataset",
+  "TIP // Empty can be valid when the column Missing Policy is set to Allowed",
+  "TIP // Division by zero is blocked because infinity does not fit inside a CSV cell",
+  "TIP // Changing a column type changes the scanner and not the values themselves",
+  "TIP // A Category dropdown uses the allowed values you configured for that column"
+];
+const CLIPBIT_WORKSPACE_NONSENSE = [
+  "Ninety percent of data cleaning is deciding whether NULL means nothing or something terrible",
+  "Deleting a row is technically cleaning if nobody asks where it went",
+  "CSV stands for Commas Somehow Survived",
+  "The scanner cannot judge you but Clipbit absolutely can",
+  "If the corruption meter goes up pretend it was a stress test",
+  "Clean data is just dirty data with a convincing story",
+  "The spreadsheet is not haunted but the duplicate rows are moving again",
+  "Every empty cell is innocent until the scanner says otherwise",
+];
+const CLIPBIT_PESTER_REACTIONS = [
+  { message: "Please stop clicking me because I am trying to look employed", mood: "alarmed" },
+  { message: "That was my face and I would like to file a very small complaint", mood: "worried" },
+  { message: "The dataset does not get cleaner when you click me but your commitment is impressive", mood: "smug" },
+  { message: "I have counted every click and the number is becoming personal", mood: "worried" },
+  { message: "One more click and I am adding you to the invalid values list", mood: "alarmed" },
+  { message: "My warranty does not cover this amount of attention", mood: "smug" },
+  { message: "I am a paperclip assistant not a stress button", mood: "worried" },
+  { message: "The spreadsheet is over there and yet here you are again", mood: "smug" },
+  { message: "This is how corrupted assistants are made", mood: "alarmed" },
+  { message: "I felt that one in my source code", mood: "worried" },
+  { message: "Clipbit.exe is considering an unexpected vacation", mood: "alarmed" },
+  { message: "Fine you win and this button works extremely well", mood: "happy" },
+];
+const CLIPBIT_FILE_HIT_REACTIONS = [
+  "You just threw a CSV at my face and somehow I am the broken one",
+  "Please aim at the recycle bin and not the unpaid assistant",
+  "Direct hit and exactly zero data was cleaned",
+  "That file was not included in my job description",
+  "I am reporting this to absolutely nobody because I have no manager",
+  "The file bounced back but the emotional damage stayed",
+];
 const GRID_ROW_SELECTION = {
   mode: "multiRow",
   checkboxes: false,
@@ -92,6 +186,7 @@ const EMPTY_FILL_DRAFT = {
   scope: "both",
   method: "custom",
   customValue: "",
+  customDate: "",
   groupBy: "",
   orderBy: "",
   orderDirection: "asc",
@@ -133,6 +228,15 @@ const REGEX_CHEAT_SHEET = [
 function App() {
   const gridRef = useRef(null);
   const challengeResultTimeoutRef = useRef(null);
+  const audioReadyRef = useRef(false);
+  const clipbitPesterCountRef = useRef(0);
+  const clipbitTipIndexRef = useRef(0);
+  const clipbitTipTurnRef = useRef(0);
+  const clipbitNonsenseIndexRef = useRef(0);
+  const clipbitFileHitReactionRef = useRef(0);
+  const clipbitFileHitTimesRef = useRef([]);
+  const officeMessageSequenceRef = useRef(0);
+  const officeMessageTurnsRef = useRef({});
   const [rows, setRows] = useState([]);
   const [columns, setColumns] = useState([]);
   const [visibleColumns, setVisibleColumns] = useState([]);
@@ -144,14 +248,11 @@ function App() {
   const [showRowNumbers, setShowRowNumbers] = useState(true);
   const [selectedColumn, setSelectedColumn] = useState("");
   const [isValidationPanelOpen, setIsValidationPanelOpen] = useState(false);
-  const [currentIssueIndex, setCurrentIssueIndex] = useState(-1);
   const [numericConversionNotice, setNumericConversionNotice] = useState("");
   const [pendingConfirmation, setPendingConfirmation] = useState(null);
   const [isRuleBuilderOpen, setIsRuleBuilderOpen] = useState(false);
   const [ruleDraft, setRuleDraft] = useState(null);
   const [allowedValueInput, setAllowedValueInput] = useState("");
-  const [existingCategoryValue, setExistingCategoryValue] = useState("");
-  const [isExistingCategoryListOpen, setIsExistingCategoryListOpen] = useState(false);
   const [existingCategoryFilter, setExistingCategoryFilter] = useState("");
   const [ruleBuilderTestValue, setRuleBuilderTestValue] = useState("");
   const [savedRegexRules, setSavedRegexRules] = useState(readSavedRegexRules);
@@ -188,20 +289,40 @@ function App() {
   const [recipePreview, setRecipePreview] = useState(null);
   const [renamingRecipeId, setRenamingRecipeId] = useState("");
   const [renamingRecipeName, setRenamingRecipeName] = useState("");
-  const [isChallengeBrowserOpen, setIsChallengeBrowserOpen] = useState(false);
+  const [viewMode, setViewMode] = useState("campaign");
   const [activeChallengeId, setActiveChallengeId] = useState("");
   const [isObjectivesOpen, setIsObjectivesOpen] = useState(true);
   const [challengeEvaluation, setChallengeEvaluation] = useState(null);
   const [isChallengeResultOpen, setIsChallengeResultOpen] = useState(false);
   const [isChallengeCelebrating, setIsChallengeCelebrating] = useState(false);
-  const [challengeRecords, setChallengeRecords] = useState(readChallengeRecords);
+  const [gameProgress, setGameProgress] = useState(readGameProgress);
+  const [runStats, setRunStats] = useState(createRunStats);
   const [savedWorkspaceIds, setSavedWorkspaceIds] = useState([]);
+  const [campaignPowerSequenceSignal, setCampaignPowerSequenceSignal] = useState(0);
   const [pendingChallengeLaunch, setPendingChallengeLaunch] = useState(null);
   const [challengeStoryPage, setChallengeStoryPage] = useState(0);
   const [challengeStoryCharacterCount, setChallengeStoryCharacterCount] = useState(0);
   const [isChallengeLoading, setIsChallengeLoading] = useState(false);
   const [challengeLoadingTitle, setChallengeLoadingTitle] = useState("");
   const [challengeLoadError, setChallengeLoadError] = useState("");
+  const [isScanning, setIsScanning] = useState(false);
+  const [audioSettings, setAudioSettings] = useState(readAudioSettings);
+  const [effectsMode, setEffectsMode] = useState(readEffectsMode);
+  const [systemReducedMotion, setSystemReducedMotion] = useState(
+    () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+  const [feedbackState, dispatchFeedback] = useReducer(feedbackReducer, INITIAL_FEEDBACK_STATE);
+  const [isAchievementsOpen, setIsAchievementsOpen] = useState(false);
+  const [achievementQueue, setAchievementQueue] = useState([]);
+  const [activeAchievement, setActiveAchievement] = useState(null);
+  const [clipbitReaction, setClipbitReaction] = useState({
+    message: "Boot Sequence is waiting and somehow the tutorial file is already broken",
+    mood: "smug",
+  });
+  const [isClipbitMinimized, setIsClipbitMinimized] = useState(true);
+  const [clipbitBreakSignal, setClipbitBreakSignal] = useState(0);
+  const [officeMessages, setOfficeMessages] = useState([]);
+  const [isOfficeChatOpen, setIsOfficeChatOpen] = useState(false);
   const [autosaveReady, setAutosaveReady] = useState(false);
   const [autosaveStatus, setAutosaveStatus] = useState("Loading saved work...");
   const deferredFillDraft = useDeferredValue(fillDraft);
@@ -213,6 +334,14 @@ function App() {
   const storyChallenge = getChallenge(pendingChallengeLaunch?.challengeId);
   const challengeStoryText = storyChallenge?.story?.[challengeStoryPage] ?? "";
   const isChallengeStoryPageComplete = challengeStoryCharacterCount >= challengeStoryText.length;
+  const challengeScore = useMemo(
+    () => calculateChallengeScore(activeChallenge, challengeEvaluation, runStats),
+    [activeChallenge, challengeEvaluation, runStats],
+  );
+  const activeFeedback = feedbackState.active;
+  const isViewportFeedback = VIEWPORT_FEEDBACK_KINDS.has(activeFeedback?.kind);
+  const tableFeedback = isViewportFeedback ? null : activeFeedback;
+  const isEffectsReduced = shouldReduceEffects(effectsMode, { matches: systemReducedMotion });
 
   useEffect(() => {
     window.localStorage.setItem(REGEX_STORAGE_KEY, JSON.stringify(savedRegexRules));
@@ -231,8 +360,95 @@ function App() {
   }, [savedRecipes]);
 
   useEffect(() => {
-    window.localStorage.setItem("cleansheet.challenge-records", JSON.stringify(challengeRecords));
-  }, [challengeRecords]);
+    writeGameProgress(gameProgress);
+  }, [gameProgress]);
+
+  useEffect(() => {
+    writeAudioSettings(audioSettings);
+  }, [audioSettings]);
+
+  useEffect(() => {
+    writeEffectsMode(effectsMode);
+  }, [effectsMode]);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const handleChange = () => setSystemReducedMotion(mediaQuery.matches);
+    handleChange();
+    mediaQuery.addEventListener?.("change", handleChange);
+    return () => mediaQuery.removeEventListener?.("change", handleChange);
+  }, []);
+
+  useEffect(() => {
+    if (!activeFeedback) return undefined;
+    if (activeFeedback.sound) playGameSound(activeFeedback.sound, audioSettings);
+    const frameId = window.requestAnimationFrame(() => flashFeedbackTargets(activeFeedback));
+    const timeoutId = window.setTimeout(
+      () => dispatchFeedback({ type: "dismiss" }),
+      isEffectsReduced ? Math.min(750, activeFeedback.duration) : activeFeedback.duration,
+    );
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [activeFeedback?.id]);
+
+  useEffect(() => {
+    dispatchFeedback({ type: "clear" });
+  }, [viewMode, activeChallengeId]);
+
+  useEffect(() => {
+    if (activeAchievement || !achievementQueue.length) return undefined;
+    const [nextAchievement, ...remaining] = achievementQueue;
+    setActiveAchievement(nextAchievement);
+    setAchievementQueue(remaining);
+    return undefined;
+  }, [achievementQueue, activeAchievement]);
+
+  useEffect(() => {
+    if (!activeAchievement) return undefined;
+    playSound("achievement");
+    const timeoutId = window.setTimeout(() => setActiveAchievement(null), 3400);
+    return () => window.clearTimeout(timeoutId);
+  }, [activeAchievement]);
+
+  useEffect(() => {
+    if (!activeChallenge) return;
+    const result = findNewAchievements(gameProgress, {
+      challenge: activeChallenge,
+      evaluation: challengeEvaluation,
+      runStats,
+      score: challengeScore,
+    });
+    if (!result.earned.length) return;
+    setGameProgress(result.progress);
+    setAchievementQueue((current) => [...current, ...result.earned]);
+  }, [runStats.undoCount, runStats.largestChange, runStats.clipbitClicks]);
+
+  useEffect(() => {
+    if (viewMode !== "campaign" && !activeChallenge) return undefined;
+    if (isScanning || isChallengeCelebrating || isChallengeResultOpen) return undefined;
+    const timeoutId = window.setTimeout(() => {
+      const tips = viewMode === "campaign" ? CLIPBIT_CAMPAIGN_TIPS : CLIPBIT_WORKSPACE_TIPS;
+      const nonsense = viewMode === "campaign" ? CLIPBIT_CAMPAIGN_NONSENSE : CLIPBIT_WORKSPACE_NONSENSE;
+      const showNonsense = (clipbitTipTurnRef.current + 1) % 4 === 0;
+      const message = showNonsense
+        ? nonsense[clipbitNonsenseIndexRef.current % nonsense.length]
+        : tips[clipbitTipIndexRef.current % tips.length];
+      if (showNonsense) clipbitNonsenseIndexRef.current += 1;
+      else clipbitTipIndexRef.current += 1;
+      clipbitTipTurnRef.current += 1;
+      setClipbitReaction({ message, mood: showNonsense ? "smug" : "idle" });
+    }, CLIPBIT_TIP_INTERVAL);
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    activeChallenge,
+    clipbitReaction.message,
+    isChallengeCelebrating,
+    isChallengeResultOpen,
+    isScanning,
+    viewMode,
+  ]);
 
   useEffect(() => () => {
     if (challengeResultTimeoutRef.current) window.clearTimeout(challengeResultTimeoutRef.current);
@@ -265,10 +481,10 @@ function App() {
         .catch(() => setAutosaveStatus("Autosave unavailable"));
     }, 700);
     return () => window.clearTimeout(timeoutId);
-  }, [activeChallengeId, autosaveReady, challengeEvaluation, columnRules, columns, fileName, history, lastScannedAt, relationshipRules, rows, selectedColumn, validationIssues, visibleColumns]);
+  }, [activeChallengeId, autosaveReady, challengeEvaluation, columnRules, columns, fileName, history, lastScannedAt, relationshipRules, rows, runStats, selectedColumn, validationIssues, visibleColumns]);
 
   useEffect(() => {
-    if (!isChallengeBrowserOpen) return;
+    if (viewMode !== "campaign") return;
     let cancelled = false;
     Promise.all(CHALLENGES.map(async (challenge) => {
       const workspaceId = `challenge:${challenge.id}`;
@@ -281,17 +497,18 @@ function App() {
       .then((workspaceIds) => {
         if (cancelled) return;
         setSavedWorkspaceIds(workspaceIds.filter(Boolean));
-        setChallengeRecords((current) => Object.fromEntries(
-          Object.entries(current).filter(([challengeId, record]) => (
+        setGameProgress((current) => ({
+          ...current,
+          records: Object.fromEntries(Object.entries(current.records).filter(([challengeId, record]) => (
             hasCurrentChallengeRevision(getChallenge(challengeId), record?.revision)
-          )),
-        ));
+          ))),
+        }));
       })
       .catch(() => {
         if (!cancelled) setSavedWorkspaceIds([]);
       });
     return () => { cancelled = true; };
-  }, [isChallengeBrowserOpen]);
+  }, [viewMode]);
 
   useEffect(() => {
     if (!pendingChallengeLaunch || !challengeStoryText) return undefined;
@@ -313,7 +530,7 @@ function App() {
   }, [challengeStoryPage, challengeStoryText, pendingChallengeLaunch]);
 
   useEffect(() => {
-    if (!pendingConfirmation && !isRuleBuilderOpen && !isFillDialogOpen && !isCleaningToolsOpen && !isChallengeBrowserOpen && !isChallengeResultOpen && !pendingChallengeLaunch) return undefined;
+    if (!pendingConfirmation && !isRuleBuilderOpen && !isFillDialogOpen && !isCleaningToolsOpen && !isAchievementsOpen && !isChallengeResultOpen && !pendingChallengeLaunch) return undefined;
     const handleKeyDown = (event) => {
       if (event.key === "Escape" && pendingChallengeLaunch) {
         closeChallengeStory();
@@ -329,13 +546,37 @@ function App() {
         setIsRuleBuilderOpen(false);
         setIsFillDialogOpen(false);
         setIsCleaningToolsOpen(false);
-        setIsChallengeBrowserOpen(false);
+        setIsAchievementsOpen(false);
         setIsChallengeResultOpen(false);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isChallengeBrowserOpen, isChallengeResultOpen, isChallengeStoryPageComplete, isCleaningToolsOpen, isFillDialogOpen, isRuleBuilderOpen, pendingChallengeLaunch, pendingConfirmation]);
+  }, [isAchievementsOpen, isChallengeResultOpen, isChallengeStoryPageComplete, isCleaningToolsOpen, isFillDialogOpen, isRuleBuilderOpen, pendingChallengeLaunch, pendingConfirmation]);
+
+  useEffect(() => {
+    if (!isRuleBuilderOpen) return undefined;
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousRootOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousRootOverflow;
+    };
+  }, [isRuleBuilderOpen]);
+
+  useEffect(() => {
+    const handleClick = (event) => {
+      if (!audioReadyRef.current) return;
+      const button = event.target.closest("button, .file-picker");
+      if (!button || button.disabled) return;
+      if (button.dataset.gameSound === "custom") return;
+      playSound("click");
+    };
+    document.addEventListener("click", handleClick);
+    return () => document.removeEventListener("click", handleClick);
+  }, [audioSettings]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -413,8 +654,18 @@ function App() {
   }, [columns, rows]);
 
   const selectedRule = selectedColumn ? resolveColumnRule(columnRules[selectedColumn] ?? createColumnRule("Text"), regexRuleLibrary) : null;
+  const selectedDetectedType = useMemo(
+    () => selectedColumn ? inferColumnType(rows, selectedColumn) : "",
+    [rows, selectedColumn],
+  );
   const selectedColumnIssueCount = selectedColumn ? issueCountByColumn[selectedColumn] ?? 0 : 0;
-  const activeIssue = currentIssueIndex >= 0 ? validationIssues[currentIssueIndex] : null;
+  const existingCategoryOptions = categoryOptionsByColumn[selectedColumn] ?? [];
+  const filteredExistingCategoryOptions = existingCategoryOptions.filter((value) => (
+    value.toLowerCase().includes(existingCategoryFilter.trim().toLowerCase())
+  ));
+  const selectedExistingCategoryCount = existingCategoryOptions.filter((value) => (
+    ruleDraft?.allowedValues?.includes(value)
+  )).length;
   const selectedRegexState = selectedRule ? getCustomRegexState(selectedRule) : { valid: true, error: "" };
   const ruleBuilderRegexState = ruleDraft && isCustomRegexMode(ruleDraft) ? getCustomRegexState(ruleDraft) : { valid: true, error: "" };
   const isMissingToolValid = Boolean(
@@ -463,6 +714,7 @@ function App() {
     ? getFillMethodsForType("").filter((method) => method.id === "custom")
     : getFillMethodsForType(fillColumnRule?.type ?? "Text");
   const selectedFillMethod = fillMethods.find((method) => method.id === fillDraft.method) ?? null;
+  const effectiveFillCustomValue = getFillReplacementValue(fillDraft, fillColumnRule);
   const fillPreview = useMemo(() => {
     if (!isFillDialogOpen || !deferredFillDraft.column) return { valid: false, error: "Choose a column.", targetCount: 0, changeCount: 0, skippedCount: 0, examples: [], allocations: [] };
     if (deferredFillDraft.column === ALL_ISSUE_COLUMNS) {
@@ -480,6 +732,7 @@ function App() {
     const rule = resolveColumnRule(columnRules[deferredFillDraft.column] ?? createColumnRule("Text"), regexRuleLibrary);
     return calculateColumnFill(rows, {
       ...deferredFillDraft,
+      customValue: getFillReplacementValue(deferredFillDraft, rule),
       type: rule.type,
       isValid: (value) => validateValue(value, rule).valid,
       isMissing: (value) => isMissingValue(value, rule),
@@ -488,16 +741,17 @@ function App() {
   }, [columnRules, deferredFillDraft, fillIssueColumns, isFillDialogOpen, regexRuleLibrary, rows]);
   const isFillPreviewPending = deferredFillDraft !== fillDraft;
   const customFillWarning = useMemo(() => {
-    if (!isFillDialogOpen || fillDraft.method !== "custom") return "";
+    if (!isFillDialogOpen || !["custom", "customDate"].includes(fillDraft.method)) return "";
+    if (fillDraft.method === "customDate" && !fillDraft.customDate) return "";
     const columnsToCheck = fillDraft.column === ALL_ISSUE_COLUMNS ? fillIssueColumns : [fillDraft.column];
     const missingColumns = columnsToCheck.filter((column) => {
       const rule = resolveColumnRule(columnRules[column] ?? createColumnRule("Text"), regexRuleLibrary);
-      return isMissingValue(fillDraft.customValue, rule);
+      return isMissingValue(getFillReplacementValue(fillDraft, rule), rule);
     });
     if (missingColumns.length) return "This replacement is treated as missing by the current column rule.";
     const failingColumns = columnsToCheck.filter((column) => {
       const rule = resolveColumnRule(columnRules[column] ?? createColumnRule("Text"), regexRuleLibrary);
-      return !validateValue(fillDraft.customValue, rule).valid;
+      return !validateValue(getFillReplacementValue(fillDraft, rule), rule).valid;
     });
     if (!failingColumns.length) return "";
     return fillDraft.column === ALL_ISSUE_COLUMNS
@@ -518,6 +772,13 @@ function App() {
   const canScan = visibleRows.length > 0
     && invalidVisibleRegexColumns.length === 0
     && invalidVisibleMissingColumns.length === 0;
+  const scanBlockerMessage = invalidVisibleRegexColumns.length && invalidVisibleMissingColumns.length
+    ? "Fix the invalid Regex and missing value rules before scanning"
+    : invalidVisibleRegexColumns.length
+      ? "Fix invalid custom Regex rules before scanning"
+      : invalidVisibleMissingColumns.length
+        ? "Finish the conditional missing value rules before scanning"
+        : "";
   const regexTestResult = selectedRule && isCustomRegexMode(selectedRule) && regexTestValue
     ? validateWithCustomRegex(regexTestValue, selectedRule.customPattern, selectedRule.matchMode)
     : null;
@@ -597,6 +858,7 @@ function App() {
       history,
       capturedRecipeSteps,
       challengeEvaluation,
+      runStats,
       challengeRevision: activeChallenge?.revision ?? null,
     };
   }
@@ -616,10 +878,10 @@ function App() {
     setHistory(snapshot.history ?? { past: [], future: [] });
     setCapturedRecipeSteps(snapshot.capturedRecipeSteps ?? []);
     setChallengeEvaluation(snapshot.challengeEvaluation ?? null);
+    setRunStats(normalizeRunStats(snapshot.runStats));
     setActiveChallengeId(challengeId);
     setIsValidationPanelOpen(false);
     setIsRelationshipPanelOpen(false);
-    setCurrentIssueIndex(-1);
     setShowIssueRowsOnly(false);
   }
 
@@ -643,7 +905,6 @@ function App() {
     setLastScannedAt(new Date());
     setHasUnscannedChanges(false);
     setIsValidationPanelOpen(false);
-    setCurrentIssueIndex(-1);
     setRelationshipIssues([]);
     setSelectedRelationshipFixes([]);
     setHistory({ past: [], future: [] });
@@ -652,11 +913,127 @@ function App() {
     setRecipePreview(null);
     setActiveChallengeId(options.challengeId ?? "");
     setChallengeEvaluation(null);
+    setRunStats(createRunStats());
     setIsChallengeResultOpen(false);
     setIsObjectivesOpen(true);
     setPendingChallengeLaunch(null);
     setChallengeStoryPage(0);
     setChallengeStoryCharacterCount(0);
+  }
+
+  function playSound(name) {
+    playGameSound(name, audioSettings);
+  }
+
+  async function enableGameAudio() {
+    audioReadyRef.current = true;
+    await unlockAudio();
+  }
+
+  function changeAudioSettings(nextSettings) {
+    enableGameAudio();
+    setAudioSettings((current) => ({ ...current, ...nextSettings }));
+  }
+
+  function changeEffectsMode(mode) {
+    setEffectsMode(mode === "reduced" ? "reduced" : "full");
+  }
+
+  function flashFeedbackTargets(event) {
+    if (!event?.targets?.length) return;
+    const api = gridRef.current?.api;
+    if (!api) return;
+    const rowNodes = [];
+    const columnsToFlash = new Set();
+    const seenRows = new Set();
+    for (const target of event.targets) {
+      const rowNode = api.getRowNode(target.rowId);
+      if (!rowNode || rowNode.rowIndex == null) continue;
+      if (!seenRows.has(target.rowId)) {
+        rowNodes.push(rowNode);
+        seenRows.add(target.rowId);
+      }
+      if (visibleColumns.includes(target.column)) columnsToFlash.add(target.column);
+    }
+    if (!rowNodes.length || !columnsToFlash.size) return;
+    api.flashCells({
+      rowNodes,
+      columns: [...columnsToFlash],
+      flashDuration: isEffectsReduced ? 260 : 520,
+      fadeDuration: isEffectsReduced ? 180 : 420,
+    });
+  }
+
+  function focusHealthIssue(issue) {
+    if (!issue?.rowId || !issue.column) return;
+    setShowIssueRowsOnly(false);
+    selectColumn(issue.column);
+    document.querySelector(".table-grid")?.scrollIntoView({
+      behavior: isEffectsReduced ? "auto" : "smooth",
+      block: "center",
+    });
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const api = gridRef.current?.api;
+      const rowNode = api?.getRowNode(issue.rowId);
+      if (!api || !rowNode || rowNode.rowIndex == null) return;
+      const pageSize = api.paginationGetPageSize?.() ?? 100;
+      api.paginationGoToPage?.(Math.floor(rowNode.rowIndex / pageSize));
+      api.ensureColumnVisible?.(issue.column);
+      window.requestAnimationFrame(() => {
+        api.ensureIndexVisible?.(rowNode.rowIndex, "middle");
+        api.setFocusedCell?.(rowNode.rowIndex, issue.column);
+        api.flashCells({
+          rowNodes: [rowNode],
+          columns: [issue.column],
+          flashDuration: isEffectsReduced ? 260 : 620,
+          fadeDuration: isEffectsReduced ? 180 : 480,
+        });
+      });
+    }));
+  }
+
+  function postOfficeMessage(challenge, kind, context = {}, options = {}) {
+    if (!challenge?.office) return;
+    const turnKey = `${challenge.id}:${kind}`;
+    const turn = officeMessageTurnsRef.current[turnKey] ?? 0;
+    const content = getOfficeMessage(challenge.office, kind, turn, context);
+    if (!content) return;
+    officeMessageTurnsRef.current[turnKey] = turn + 1;
+    officeMessageSequenceRef.current += 1;
+    const message = {
+      ...content,
+      id: `office-${challenge.id}-${officeMessageSequenceRef.current}`,
+    };
+    setOfficeMessages((current) => [...current, message].slice(-12));
+    if (options.open !== false) setIsOfficeChatOpen(true);
+  }
+
+  function startOfficeThread(challenge) {
+    officeMessageTurnsRef.current = {};
+    setOfficeMessages([]);
+    setIsOfficeChatOpen(false);
+    postOfficeMessage(challenge, "start");
+  }
+
+  async function openFreeClean() {
+    const normalWorkspace = await loadWorkspace("normal").catch(() => null);
+    if (normalWorkspace) restoreWorkspaceSnapshot(normalWorkspace, "");
+    else resetLoadedFileState();
+    setOfficeMessages([]);
+    setIsOfficeChatOpen(false);
+    setViewMode("workspace");
+  }
+
+  function showCampaign() {
+    setViewMode("campaign");
+    setIsAchievementsOpen(false);
+    setIsOfficeChatOpen(false);
+    setClipbitReaction({
+      message: gameProgress.records["boot-sequence"]?.complete
+        ? "Pick a file and I will supervise from a legally safe distance"
+        : "Boot Sequence first because the desktop is currently held together by error messages",
+      mood: gameProgress.records["boot-sequence"]?.complete ? "idle" : "smug",
+    });
   }
 
   async function loadSample() {
@@ -680,8 +1057,10 @@ function App() {
     loadData(parsed.data, file.name);
   }
 
-  function requestChallengeStory(challengeId, restart = false) {
+  async function requestChallengeStory(challengeId, restart = false) {
     const challenge = getChallenge(challengeId);
+    await enableGameAudio();
+    playSound("open");
     if (!challenge?.story?.length) {
       openChallenge(challengeId, restart);
       return;
@@ -718,6 +1097,7 @@ function App() {
   async function openChallenge(challengeId, restart = false) {
     const challenge = getChallenge(challengeId);
     if (!challenge) return;
+    await enableGameAudio();
     setChallengeLoadError("");
     setChallengeLoadingTitle(challenge.title);
     setIsChallengeLoading(true);
@@ -739,7 +1119,9 @@ function App() {
         const challengeRows = await loadChallengeRows(challenge);
         loadData(challengeRows, `Challenge ${challenge.number}: ${challenge.title}`, { challengeId });
       }
-      setIsChallengeBrowserOpen(false);
+      setViewMode("workspace");
+      setClipbitReaction({ message: challenge.assistant?.start ?? "I have inspected the file and it is definitely your problem now", mood: "smug" });
+      startOfficeThread(challenge);
     } catch (error) {
       setChallengeLoadError(error instanceof Error ? error.message : "The challenge could not be loaded");
     } finally {
@@ -770,6 +1152,9 @@ function App() {
     if (normalWorkspace) restoreWorkspaceSnapshot(normalWorkspace, "");
     else resetLoadedFileState();
     setIsChallengeResultOpen(false);
+    setOfficeMessages([]);
+    setIsOfficeChatOpen(false);
+    showCampaign();
   }
 
   function clearLoadedFile() {
@@ -801,7 +1186,6 @@ function App() {
     setHasUnscannedChanges(false);
     setSelectedColumn("");
     setIsValidationPanelOpen(false);
-    setCurrentIssueIndex(-1);
     setNumericConversionNotice("");
     setColumnRegexSummary(null);
     setRelationshipIssues([]);
@@ -813,11 +1197,15 @@ function App() {
     setRecipePreview(null);
     setActiveChallengeId("");
     setChallengeEvaluation(null);
+    setRunStats(createRunStats());
     setIsChallengeResultOpen(false);
+    setIsScanning(false);
     setIsObjectivesOpen(true);
     setPendingChallengeLaunch(null);
     setChallengeStoryPage(0);
     setChallengeStoryCharacterCount(0);
+    setOfficeMessages([]);
+    setIsOfficeChatOpen(false);
     setAutosaveStatus("Autosave ready");
   }
 
@@ -831,6 +1219,12 @@ function App() {
     if (String(before) === String(event.newValue ?? "")) return;
     setRows(updatedRows);
     pushHistory({ label: "Edit cell", kind: "cells", changes: [{ rowId: event.data.__rowId, column: event.colDef.field, before, after: event.newValue }] });
+    event.api.flashCells({
+      rowNodes: [event.node],
+      columns: [event.column],
+      flashDuration: isEffectsReduced ? 220 : 360,
+      fadeDuration: isEffectsReduced ? 160 : 280,
+    });
     setHasUnscannedChanges(true);
   }
 
@@ -866,6 +1260,24 @@ function App() {
       setCapturedRecipeSteps((currentSteps) => [...currentSteps, { ...nextAction.recipeStep, captureId: nextAction.captureId }]);
     }
     setHistory((current) => ({ past: [...current.past, nextAction].slice(-HISTORY_LIMIT), future: [] }));
+    if (activeChallenge && isScoreableAction(nextAction)) {
+      const changeSize = getActionChangeSize(nextAction);
+      setRunStats((current) => ({
+        ...current,
+        moves: current.moves + 1,
+        deletedRows: current.deletedRows + getDeletedRowCount(nextAction),
+        largestChange: Math.max(current.largestChange, changeSize),
+      }));
+    }
+    if (activeChallenge) {
+      if (nextAction.kind === "deleteRows") postOfficeMessage(activeChallenge, "delete");
+      else if (nextAction.kind === "schema") postOfficeMessage(activeChallenge, "schema");
+      else if (nextAction.feedback?.kind === "formula" || nextAction.recipeStep?.type === "relationshipFix") {
+        postOfficeMessage(activeChallenge, "formula");
+      }
+    }
+    const feedback = createActionFeedback(nextAction);
+    if (feedback) dispatchFeedback({ type: "enqueue", event: feedback });
   }
 
   function applyCellChanges(currentRows, changes, direction) {
@@ -890,6 +1302,19 @@ function App() {
     applyHistoryAction(action, "undo");
     if (action.captureId) setCapturedRecipeSteps((steps) => steps.filter((step) => step.captureId !== action.captureId));
     setHistory((current) => ({ past: current.past.slice(0, -1), future: [...current.future, action] }));
+    if (activeChallenge) {
+      setRunStats((current) => ({
+        ...current,
+        moves: isScoreableAction(action) ? Math.max(0, current.moves - 1) : current.moves,
+        undoCount: current.undoCount + 1,
+        deletedRows: Math.max(0, current.deletedRows - getDeletedRowCount(action)),
+      }));
+      setClipbitReaction((current) => current.mood === "alarmed"
+        ? current
+        : { message: "Undo is free so experiment wildly and pretend it was all intentional", mood: "smug" });
+    }
+    const feedback = createActionFeedback(action, "undo");
+    if (feedback) dispatchFeedback({ type: "enqueue", event: feedback });
     if (action.kind !== "columnOrder") clearDerivedResults();
   }
 
@@ -901,6 +1326,15 @@ function App() {
       setCapturedRecipeSteps((steps) => [...steps, { ...action.recipeStep, captureId: action.captureId }]);
     }
     setHistory((current) => ({ past: [...current.past, action].slice(-HISTORY_LIMIT), future: current.future.slice(0, -1) }));
+    if (activeChallenge && isScoreableAction(action)) {
+      setRunStats((current) => ({
+        ...current,
+        moves: current.moves + 1,
+        deletedRows: current.deletedRows + getDeletedRowCount(action),
+      }));
+    }
+    const feedback = createActionFeedback(action, "redo");
+    if (feedback) dispatchFeedback({ type: "enqueue", event: feedback });
     if (action.kind !== "columnOrder") clearDerivedResults();
   }
 
@@ -950,7 +1384,6 @@ function App() {
     setValidationIssues([]);
     setRelationshipIssues([]);
     setSelectedRelationshipFixes([]);
-    setCurrentIssueIndex(-1);
     setShowIssueRowsOnly(false);
     setHasUnscannedChanges(true);
   }
@@ -1087,8 +1520,10 @@ function App() {
     });
     setColumnRules(nextRules);
     setMissingRuleDraft(createMissingRuleDraft(column, nextRules));
-    setMissingRuleNotice(`Saved for ${column}. Scan again to update the issues.`);
+    setMissingRuleNotice("");
     clearDerivedResults();
+    setActiveCleaningTool("home");
+    setIsCleaningToolsOpen(false);
   }
 
   function toggleToolColumn(setter, key, column) {
@@ -1158,6 +1593,14 @@ function App() {
       outputColumn: combineDraft.outputColumn.trim(),
       sourceColumns: [...combineDraft.sourceColumns],
     });
+  }
+
+  async function resetPlayerProgress() {
+    await Promise.all(CHALLENGES.map((challenge) => (
+      deleteWorkspace(`challenge:${challenge.id}`).catch(() => {})
+    )));
+    window.localStorage.removeItem(GAME_PROGRESS_KEY);
+    window.location.reload();
   }
 
   function applyCreateColumn() {
@@ -1647,9 +2090,7 @@ function App() {
       missingTokensInput: (currentRule.missingTokens ?? []).join(", "),
     });
     setAllowedValueInput("");
-    setExistingCategoryValue("");
     setExistingCategoryFilter("");
-    setIsExistingCategoryListOpen(false);
     setRuleBuilderTestValue("");
     setIsRuleBuilderOpen(true);
   }
@@ -1684,6 +2125,30 @@ function App() {
       ...currentRule,
       allowedValues: (currentRule.allowedValues ?? []).filter((item) => item !== value),
     }));
+  }
+
+  function toggleExistingCategoryValue(value) {
+    setRuleDraft((currentRule) => {
+      const currentValues = currentRule.allowedValues ?? [];
+      const isSelected = currentValues.includes(value);
+      return {
+        ...currentRule,
+        allowedValues: isSelected
+          ? currentValues.filter((item) => item !== value)
+          : [...currentValues, value],
+      };
+    });
+  }
+
+  function addShownCategoryValues() {
+    if (!filteredExistingCategoryOptions.length) return;
+    setRuleDraft((currentRule) => {
+      const currentValues = currentRule.allowedValues ?? [];
+      return {
+        ...currentRule,
+        allowedValues: [...new Set([...currentValues, ...filteredExistingCategoryOptions])],
+      };
+    });
   }
 
   function applyDraftRegexBuilder() {
@@ -2031,6 +2496,15 @@ function App() {
       label: "Apply relationship fixes",
       kind: "cells",
       changes,
+      feedback: {
+        kind: "formula",
+        sourceColumns: [...new Set(
+          relationshipRuleStates
+            .filter((rule) => selectedRuleIds.includes(rule.id))
+            .flatMap((rule) => rule.validation.references ?? []),
+        )],
+        targetColumns: [...new Set(selectedIssues.map((issue) => issue.targetColumn))],
+      },
       recipeStep: { type: "relationshipFix", relationshipIds: selectedRuleIds, rules: snapshotColumnRules([...new Set(selectedRuleColumns)]) },
     });
     setRelationshipIssues((currentIssues) => currentIssues.filter((issue) => !selectedRelationshipFixes.includes(issue.id)));
@@ -2038,15 +2512,20 @@ function App() {
     setHasUnscannedChanges(true);
   }
 
-  function scanForIssues() {
+  async function scanForIssues() {
+    if (isScanning) return;
+    const scanStartedAt = performance.now();
+    setIsScanning(true);
+    try {
+    playSound("scan");
+    await new Promise((resolve) => window.requestAnimationFrame(() => window.setTimeout(resolve, 30)));
+
     const nextIssues = validateRows(visibleRows, visibleColumnRules);
     const scannedAt = new Date();
-    setValidationIssues(nextIssues);
-    setLastScannedAt(scannedAt);
-    setHasUnscannedChanges(false);
-    setIsValidationPanelOpen(false);
-    setCurrentIssueIndex(-1);
-    if (!nextIssues.length) setShowIssueRowsOnly(false);
+    let nextEvaluation = null;
+    let nextRunStats = runStats;
+    let shouldCelebrate = false;
+    let scanFeedback = null;
     if (activeChallenge) {
       const allRules = Object.fromEntries(columns.map((column) => [
         column,
@@ -2054,7 +2533,7 @@ function App() {
       ]));
       const allRows = rows.map((row) => pickColumns(row, columns));
       const allIssues = validateRows(allRows, allRules);
-      const evaluation = evaluateChallenge(activeChallenge, {
+      nextEvaluation = evaluateChallenge(activeChallenge, {
         rows,
         columns,
         columnRules: allRules,
@@ -2062,23 +2541,98 @@ function App() {
         lastScannedAt: scannedAt,
         history: history.past,
       });
-      setChallengeEvaluation(evaluation);
-      setChallengeRecords((current) => {
-        const previous = hasCurrentChallengeRevision(activeChallenge, current[activeChallenge.id]?.revision)
-          ? current[activeChallenge.id]
-          : null;
-        return {
-          ...current,
-          [activeChallenge.id]: {
-            revision: activeChallenge.revision,
-            score: Math.max(previous?.score ?? 0, evaluation.score),
-            stars: Math.max(previous?.stars ?? 0, evaluation.stars),
-            complete: previous?.complete || evaluation.complete,
-          },
-        };
+      const previousCompleted = new Set(runStats.completedObjectiveIds);
+      const completedObjectiveIds = nextEvaluation.objectives.filter((objective) => objective.complete).map((objective) => objective.id);
+      const newlyCompleted = completedObjectiveIds.filter((objectiveId) => !previousCompleted.has(objectiveId));
+      nextRunStats = {
+        ...runStats,
+        scans: runStats.scans + 1,
+        maxCombo: Math.max(runStats.maxCombo, newlyCompleted.length),
+        completedObjectiveIds,
+      };
+      const nextScore = calculateChallengeScore(activeChallenge, nextEvaluation, nextRunStats);
+      let nextProgress = gameProgress;
+      shouldCelebrate = nextEvaluation.complete && !challengeEvaluation?.complete;
+      scanFeedback = createScanFeedback({
+        issueCount: nextIssues.length,
+        objectiveIds: newlyCompleted,
+        objectiveTitles: newlyCompleted.map((objectiveId) => (
+          nextEvaluation.objectives.find((objective) => objective.id === objectiveId)?.title
+        )).filter(Boolean),
+        complete: shouldCelebrate,
+        challenge: true,
       });
-      if (evaluation.complete) startChallengeCelebration();
+      if (shouldCelebrate) nextProgress = recordChallengeResult(nextProgress, activeChallenge, nextScore);
+      if (
+        shouldCelebrate
+        && activeChallenge.tutorial
+        && !gameProgress.records[activeChallenge.id]?.complete
+      ) {
+        setCampaignPowerSequenceSignal((current) => current + 1);
+      }
+      const achievementResult = findNewAchievements(nextProgress, {
+        challenge: activeChallenge,
+        evaluation: nextEvaluation,
+        runStats: nextRunStats,
+        score: nextScore,
+        columnRules: allRules,
+      });
+      nextProgress = achievementResult.progress;
+      if (nextProgress !== gameProgress) setGameProgress(nextProgress);
+      if (achievementResult.earned.length) {
+        setAchievementQueue((current) => [...current, ...achievementResult.earned]);
+      }
+      if (shouldCelebrate) {
+        playSound("victory");
+        setClipbitReaction({ message: activeChallenge.assistant?.win ?? "The file is clean and I will be taking partial credit", mood: "happy" });
+        postOfficeMessage(activeChallenge, "win", {}, { open: false });
+      } else if (newlyCompleted.length >= 2) {
+        playSound("combo");
+        setClipbitReaction({ message: `CLEAN COMBO x${newlyCompleted.length} and the dataset appears visibly frightened`, mood: "happy" });
+        postOfficeMessage(activeChallenge, "progress", {
+          objective: `${newlyCompleted.length} objectives`,
+          issues: nextIssues.length.toLocaleString(),
+          issueLabel: formatIssueLabel(nextIssues.length),
+        }, { open: false });
+      } else if (newlyCompleted.length === 1) {
+        playSound("objective");
+        const objective = nextEvaluation.objectives.find((item) => item.id === newlyCompleted[0]);
+        setClipbitReaction({ message: `${objective?.title ?? "Objective"} is done and I absolutely expected that`, mood: "smug" });
+        postOfficeMessage(activeChallenge, "progress", {
+          objective: objective?.title ?? "That objective",
+          issues: nextIssues.length.toLocaleString(),
+          issueLabel: formatIssueLabel(nextIssues.length),
+        }, { open: false });
+      } else {
+        setClipbitReaction({
+          message: activeChallenge.assistant?.noProgress ?? "The scan completed and the mess remains impressively committed",
+          mood: nextIssues.length ? "worried" : "idle",
+        });
+        postOfficeMessage(activeChallenge, nextIssues.length ? "trouble" : "cleanScan", {
+          issues: nextIssues.length.toLocaleString(),
+          issueLabel: formatIssueLabel(nextIssues.length),
+        }, { open: false });
+      }
+    } else {
+      scanFeedback = createScanFeedback({ issueCount: nextIssues.length });
+    }
+
+    const remainingDelay = Math.max(0, 650 - (performance.now() - scanStartedAt));
+    if (remainingDelay) await new Promise((resolve) => window.setTimeout(resolve, remainingDelay));
+    setValidationIssues(nextIssues);
+    setLastScannedAt(scannedAt);
+    setHasUnscannedChanges(false);
+    setIsValidationPanelOpen(false);
+    if (!nextIssues.length) setShowIssueRowsOnly(false);
+    if (activeChallenge) {
+      setRunStats(nextRunStats);
+      setChallengeEvaluation(nextEvaluation);
+      if (shouldCelebrate) startChallengeCelebration();
       else cancelChallengeCelebration();
+    }
+    if (scanFeedback) dispatchFeedback({ type: "enqueue", event: scanFeedback });
+    } finally {
+      setIsScanning(false);
     }
   }
 
@@ -2132,7 +2686,6 @@ function App() {
     setValidationIssues([]);
     setRelationshipIssues([]);
     setSelectedRelationshipFixes([]);
-    setCurrentIssueIndex(-1);
     setIsValidationPanelOpen(false);
     setShowIssueRowsOnly(false);
     setHasUnscannedChanges(true);
@@ -2142,9 +2695,7 @@ function App() {
     if (!fillIssueColumns.length) return;
     const nextColumn = fillIssueColumns.includes(preferredColumn)
       ? preferredColumn
-      : fillIssueColumns.includes(activeIssue?.column)
-        ? activeIssue.column
-        : fillIssueColumns[0];
+      : fillIssueColumns[0];
     setFillDraft({ ...EMPTY_FILL_DRAFT, column: nextColumn });
     setIsFillDialogOpen(true);
   }
@@ -2176,6 +2727,7 @@ function App() {
     const rule = resolveColumnRule(columnRules[fillDraft.column] ?? createColumnRule("Text"), regexRuleLibrary);
     return calculateColumnFill(rows, {
       ...fillDraft,
+      customValue: getFillReplacementValue(fillDraft, rule),
       type: rule.type,
       isValid: (value) => validateValue(value, rule).valid,
       isMissing: (value) => isMissingValue(value, rule),
@@ -2197,7 +2749,7 @@ function App() {
         columns: fillDraft.column === ALL_ISSUE_COLUMNS ? [...fillIssueColumns] : [fillDraft.column],
         scope: fillDraft.scope,
         method: fillDraft.method,
-        customValue: fillDraft.customValue,
+        customValue: effectiveFillCustomValue,
         groupBy: fillDraft.groupBy,
         orderBy: fillDraft.orderBy,
         orderDirection: fillDraft.orderDirection,
@@ -2266,7 +2818,6 @@ function App() {
     setValidationIssues(validateRows(nextVisibleRows, nextVisibleColumnRules));
     setRelationshipIssues([]);
     setSelectedRelationshipFixes([]);
-    setCurrentIssueIndex(-1);
     setLastScannedAt(new Date());
     setNumericConversionNotice(`${convertedCount.toLocaleString()} values converted${skippedCount ? `; ${skippedCount.toLocaleString()} invalid values skipped` : ""}.`);
     setColumnRegexSummary(null);
@@ -2285,31 +2836,6 @@ function App() {
     const confirmation = pendingConfirmation;
     setPendingConfirmation(null);
     confirmation?.onConfirm();
-  }
-
-  function jumpToNextIssue() {
-    if (!validationIssues.length) return;
-
-    const nextIndex = (currentIssueIndex + 1 + validationIssues.length) % validationIssues.length;
-    const issue = validationIssues[nextIndex];
-    const api = gridRef.current?.api;
-
-    setCurrentIssueIndex(nextIndex);
-    selectColumn(issue.column);
-
-    if (!api) return;
-
-    const rowNode = api.getRowNode(issue.rowId);
-    const rowIndex = rowNode?.rowIndex ?? Math.max(0, issue.row - 1);
-    api.paginationGoToPage(Math.floor(rowIndex / 100));
-    api.ensureColumnVisible(issue.column);
-    api.ensureIndexVisible(rowIndex, "middle");
-    api.setFocusedCell(rowIndex, issue.column);
-
-    const displayedRowNode = api.getDisplayedRowAtIndex(rowIndex);
-    if (displayedRowNode) {
-      api.flashCells({ rowNodes: [displayedRowNode], columns: [issue.column] });
-    }
   }
 
   function exportCsv() {
@@ -2695,23 +3221,85 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
-      <aside className="sidebar">
+    <main className={`app-shell ${activeChallenge ? "challenge-workspace" : ""} ${isEffectsReduced ? "effects-reduced" : "effects-full"}`}>
+      {viewMode === "campaign" && (
+        <CampaignMap
+          challenges={CHALLENGES}
+          progress={gameProgress}
+          savedWorkspaceIds={savedWorkspaceIds}
+          powerSequenceSignal={campaignPowerSequenceSignal}
+          onPowerSequenceComplete={() => setCampaignPowerSequenceSignal(0)}
+          onStart={(challengeId) => requestChallengeStory(challengeId)}
+          onContinue={(challengeId) => openChallenge(challengeId)}
+          onRestart={(challengeId) => requestChallengeStory(challengeId, true)}
+          onFreeClean={openFreeClean}
+          onAchievements={() => setIsAchievementsOpen(true)}
+          onSound={async (name) => {
+            await enableGameAudio();
+            playSound(name);
+          }}
+          onClipbitHit={async () => {
+            if (isClipbitMinimized) return;
+            await enableGameAudio();
+            const now = Date.now();
+            const recentHits = clipbitFileHitTimesRef.current
+              .filter((hitAt) => now - hitAt <= CLIPBIT_FILE_RAGE_WINDOW);
+            recentHits.push(now);
+            clipbitFileHitTimesRef.current = recentHits;
+            if (recentHits.length >= CLIPBIT_FILE_RAGE_COUNT) {
+              clipbitFileHitTimesRef.current = [];
+              playSound("clipbitBreak");
+              setIsClipbitMinimized(false);
+              setClipbitReaction({
+                message: "FOUR FILES IS NOT DATA CLEANING, I QUIT",
+                mood: "angry",
+              });
+              setClipbitBreakSignal((current) => current + 1);
+              return;
+            }
+            playSound("clipbitHit");
+            const message = CLIPBIT_FILE_HIT_REACTIONS[
+              clipbitFileHitReactionRef.current % CLIPBIT_FILE_HIT_REACTIONS.length
+            ];
+            clipbitFileHitReactionRef.current += 1;
+            setClipbitReaction({ message, mood: "alarmed" });
+          }}
+          soundControls={(
+            <>
+              <SoundControls
+                settings={audioSettings}
+                onMute={() => changeAudioSettings({ muted: !audioSettings.muted })}
+                onVolume={(volume) => changeAudioSettings({ volume, muted: false })}
+              />
+              <EffectsControl mode={effectsMode} onChange={changeEffectsMode} />
+            </>
+          )}
+        />
+      )}
+      <aside
+        className="sidebar"
+        aria-hidden={viewMode === "campaign" ? true : undefined}
+        inert={viewMode === "campaign" ? "" : undefined}
+      >
         <div className="brand-lockup">
           <div className="brand">CleanSheet</div>
         </div>
 
         <section className="control-section">
-          <h2>Load data</h2>
-          <button type="button" onClick={loadSample}>Load Sample Dataset</button>
-          <label className="file-picker">
-            Upload CSV
-            <input type="file" accept=".csv" onChange={handleFileUpload} />
-          </label>
+          <h2>{activeChallenge ? "Challenge file" : "Load data"}</h2>
+          {!activeChallenge && (
+            <>
+              <button type="button" onClick={loadSample}>Load Sample Dataset</button>
+              <label className="file-picker">
+                Upload CSV
+                <input type="file" accept=".csv" onChange={handleFileUpload} />
+              </label>
+            </>
+          )}
           <span className="file-name">{fileName}</span>
-          <button type="button" className="challenge-launch-button" onClick={() => setIsChallengeBrowserOpen(true)}>
-            <span>Cleaning Challenges</span>
-            <small>{CHALLENGES.length} datasets waiting</small>
+          <button type="button" className="challenge-launch-button" onClick={showCampaign}>
+            <span>Campaign Desktop</span>
+            <small>{CHALLENGES.length} files waiting</small>
           </button>
         </section>
 
@@ -2768,6 +3356,10 @@ function App() {
             ))}
           </div>
         </section>
+        <section className="sidebar-effects-section">
+          <span>Visual effects</span>
+          <EffectsControl mode={effectsMode} onChange={changeEffectsMode} compact />
+        </section>
         <section className="sidebar-clear-section">
           <button type="button" className="sidebar-clear-file" onClick={clearLoadedFile} disabled={!rows.length}>
             Clear loaded file
@@ -2775,7 +3367,11 @@ function App() {
         </section>
       </aside>
 
-      <section className="workspace">
+      <section
+        className="workspace"
+        aria-hidden={viewMode === "campaign" ? true : undefined}
+        inert={viewMode === "campaign" ? "" : undefined}
+      >
         <section className="panel">
           <div className="workspace-header">
             <div>
@@ -2784,8 +3380,8 @@ function App() {
               <p className="autosave-message">{autosaveStatus}. Export CSV when you want a file you can move elsewhere.</p>
             </div>
             <div className="workspace-actions">
-              <button type="button" onClick={scanForIssues} disabled={!canScan}>
-                Scan Again
+              <button type="button" onClick={scanForIssues} disabled={!canScan || isScanning}>
+                {isScanning ? "Scanning..." : "Scan Again"}
               </button>
               <button type="button" className="export-button" onClick={exportCsv} disabled={!visibleRows.length}>
                 Export CSV
@@ -2805,6 +3401,14 @@ function App() {
             </div>
           </div>
 
+          <DataHealthMap
+            rowCount={visibleRows.length}
+            columns={visibleColumns}
+            issues={validationIssues}
+            current={Boolean(lastScannedAt) && !hasUnscannedChanges}
+            onIssueSelect={focusHealthIssue}
+          />
+
           {activeChallenge && (
             <section className={`challenge-objectives ${isObjectivesOpen ? "open" : ""}`}>
               <div className="challenge-objectives-heading">
@@ -2821,6 +3425,27 @@ function App() {
                 </button>
                 <button type="button" className="challenge-exit-button" onClick={exitChallenge}>Exit challenge</button>
               </div>
+              <div className={`challenge-run-hud ${activeFeedback?.kind === "scan-error" ? "feedback-error" : ""}`}>
+                {activeFeedback?.kind === "scan-error" && (
+                  <span className="hud-error-fragments" aria-hidden="true">
+                    {Array.from({ length: 6 }, (_, index) => <i key={index} />)}
+                  </span>
+                )}
+                <div className="corruption-meter">
+                  <div>
+                    <span>DATA CORRUPTION</span>
+                    <strong>{challengeEvaluation ? `${challengeScore.corruption}%` : "???"}</strong>
+                  </div>
+                  <div className="corruption-meter-track" aria-label={challengeEvaluation ? `${challengeScore.corruption}% data corruption remaining` : "Scan to measure data corruption"}>
+                    <span style={{ width: `${challengeEvaluation ? challengeScore.corruption : 100}%` }} />
+                  </div>
+                </div>
+                <div className="challenge-run-stats">
+                  <span><small>Moves</small><strong>{runStats.moves}</strong></span>
+                  <span><small>Best combo</small><strong>x{runStats.maxCombo}</strong></span>
+                  <span><small>Hints</small><strong>{runStats.hintsUsed}</strong></span>
+                </div>
+              </div>
               {isObjectivesOpen && (
                 <div className="challenge-objectives-body">
                   <p>{activeChallenge.subtitle}</p>
@@ -2828,8 +3453,12 @@ function App() {
                     {activeChallenge.objectives.map((objective) => {
                       const result = challengeEvaluation?.objectives.find((item) => item.id === objective.id);
                       return (
-                        <div key={objective.id} className={result?.complete ? "complete" : ""}>
+                        <div
+                          key={objective.id}
+                          className={`${result?.complete ? "complete" : ""} ${activeFeedback?.objectiveIds?.includes(objective.id) ? "just-completed" : ""}`}
+                        >
                           <span className="objective-check">{result?.complete ? "OK" : "??"}</span>
+                          {activeFeedback?.objectiveIds?.includes(objective.id) && <span className="objective-clean-stamp" aria-hidden="true">CLEAN</span>}
                           <span><strong>{objective.title}</strong><small>{result?.detail ?? "Not checked yet"}</small></span>
                         </div>
                       );
@@ -2851,10 +3480,19 @@ function App() {
                       </div>
                     </div>
                   )}
-                  <details className="challenge-hints">
-                    <summary>Hints (may contain spoilers)</summary>
-                    {activeChallenge.hints.map((hint) => <p key={hint}>{hint}</p>)}
-                  </details>
+                  {!!activeChallenge.hints?.length && (
+                    <details
+                      className="challenge-hints"
+                      onToggle={(event) => {
+                        if (!event.currentTarget.open || runStats.hintsUsed) return;
+                        setRunStats((current) => ({ ...current, hintsUsed: 1 }));
+                        setClipbitReaction({ message: "Hints are allowed and I only judge a little bit", mood: "smug" });
+                      }}
+                    >
+                      <summary>Hints (may contain spoilers)</summary>
+                      {activeChallenge.hints.map((hint) => <p key={hint}>{hint}</p>)}
+                    </details>
+                  )}
                   {activeChallenge.credit && (
                     <div className="challenge-credit">
                       <span className="field-label">Dataset credit</span>
@@ -2878,19 +3516,21 @@ function App() {
               className="information-toggle"
               onClick={() => setIsInformationOpen(!isInformationOpen)}
             >
-              <span>Information (Tutorial)</span>
-              <span>{isInformationOpen ? "Hide walkthrough" : "Sample walkthrough"}</span>
+              <span>{activeChallenge?.tutorial ? "Boot Sequence Walkthrough" : "Sample Dataset Walkthrough"}</span>
+              <span>{isInformationOpen ? "Hide walkthrough" : "Open walkthrough"}</span>
             </button>
             {isInformationOpen && (
               <div className="information-content">
                 <div className="information-intro">
-                  <strong>Try it with the sample dataset</strong>
-                  <p>Load the sample, then follow the steps below to get familiar with the project</p>
+                  <strong>{activeChallenge?.tutorial ? "Challenge 0 training file" : "Try it with the sample dataset"}</strong>
+                  <p>{activeChallenge?.tutorial ? "The training file is already loaded, follow the steps below to complete Boot Sequence" : "Load the sample, then follow the steps below to get familiar with the project"}</p>
                 </div>
                 <ol className="walkthrough-list">
                   <li>
                     <span>1</span>
-                    <div><strong>Load the sample</strong><p>Use <HintCode hint="Loads the built-in practice CSV without uploading a file.">Load Sample Dataset</HintCode> in the sidebar. It contains a dirty dataset I 'borrowed' from Kaggle</p></div>
+                    {activeChallenge?.tutorial
+                      ? <div><strong>Training file loaded</strong><p>Boot Sequence opens the broken training file for you, so you can start cleaning right away</p></div>
+                      : <div><strong>Load the sample</strong><p>Use <HintCode hint="Loads the built-in practice CSV without uploading a file.">Load Sample Dataset</HintCode> in the sidebar. It contains a dirty dataset I 'borrowed' from Kaggle</p></div>}
                   </li>
                   <li>
                     <span>2</span>
@@ -2898,7 +3538,7 @@ function App() {
                   </li>
                   <li>
                     <span>3</span>
-                    <div><strong>Set column types</strong><p>Choose <code>Number</code> for <span className="column-reference">Quantity</span>, <span className="column-reference">Price Per Unit</span>, and <span className="column-reference">Total Spent</span> by clicking each column name in the table below and changing the option that appears on the right, then click <HintCode hint="Checks every visible cell against the type and format selected for its column">Scan Again</HintCode>. Column types do not change your data; they tell the scanner what each cell should look like, and every visible cell is checked against its column's selected type during a scan</p></div>
+                    <div><strong>Set column types</strong><p>Choose <code>Number</code> for <span className="column-reference">Quantity</span>, <span className="column-reference">Price Per Unit</span>, and <span className="column-reference">Total Spent</span> by clicking each column name in the table below and using the column bar above the table, then click <HintCode hint="Checks every visible cell against the type and format selected for its column">Scan Again</HintCode>. Column types do not change your data; they tell the scanner what each cell should look like, and every visible cell is checked against its column's selected type during a scan</p></div>
                   </li>
                   <li>
                     <span>4</span>
@@ -2919,7 +3559,7 @@ function App() {
                   </li>
                   <li>
                     <span>6</span>
-                    <div><strong>Manual fix</strong><p>If automatic filling cannot handle an issue, use <HintCode hint="Jumps the table to the next detected problem.">Next Row</HintCode> to find it, then click the cell and edit it. Category cells offer existing values as choices</p></div>
+                    <div><strong>Manual fix</strong><p>If automatic filling cannot handle an issue, use <HintCode hint="Temporarily shows only rows containing detected problems.">Display invalid rows</HintCode> to find it, then click the cell and edit it. Category cells offer existing values as choices</p></div>
                   </li>
                   <li>
                     <span>7</span>
@@ -3023,7 +3663,6 @@ function App() {
                 <div className="relationship-rule-list">
                   <div className="relationship-list-heading">
                     <span className="field-label">Saved rules</span>
-                    <button type="button" className="secondary-button" onClick={() => checkRelationshipRules()} disabled={!relationshipRuleStates.some((rule) => rule.enabled && rule.validation.valid) || !rows.length}>Check all relationships</button>
                   </div>
                   {relationshipRuleStates.length === 0 ? (
                     <p className="relationship-empty">No relationships yet. Add a formula to calculate a target column from other columns.</p>
@@ -3045,12 +3684,14 @@ function App() {
                   ))}
                 </div>
 
-                {relationshipIssues.length > 0 && (
+                {relationshipRuleStates.length > 0 && (
                   <div className="relationship-results">
                     <div className="relationship-list-heading">
                       <div>
                         <span className="field-label">Suggested fixes and checks</span>
-                        <p>{relationshipIssues.length.toLocaleString()} relationship issue{relationshipIssues.length === 1 ? "" : "s"} found.</p>
+                        <p>{relationshipIssues.length
+                          ? `${relationshipIssues.length.toLocaleString()} relationship issue${relationshipIssues.length === 1 ? "" : "s"} found.`
+                          : "Check your saved rules to find fixable values."}</p>
                       </div>
                       <div className="relationship-result-actions">
                         <label className="select-all-fixes">
@@ -3063,19 +3704,22 @@ function App() {
                           Select all fixable ({fixableRelationshipIssues.length.toLocaleString()})
                         </label>
                         <button type="button" onClick={applySelectedRelationshipFixes} disabled={!selectedRelationshipFixes.length}>Apply selected fixes ({selectedRelationshipFixes.length})</button>
+                        <button type="button" className="secondary-button" onClick={() => checkRelationshipRules()} disabled={!relationshipRuleStates.some((rule) => rule.enabled && rule.validation.valid) || !rows.length}>Check all relationships</button>
                       </div>
                     </div>
-                    <div className="relationship-results-list">
-                      {relationshipIssues.slice(0, 500).map((issue) => (
-                        <label className={`relationship-issue ${issue.fixable ? "fixable" : ""}`} key={issue.id}>
-                          {issue.fixable ? (
-                            <input type="checkbox" checked={selectedRelationshipFixes.includes(issue.id)} onChange={() => toggleRelationshipFix(issue.id)} />
-                          ) : <span className="relationship-issue-marker">!</span>}
-                          <span><strong>Row {issue.row}: {issue.targetColumn}</strong>{issue.reason}</span>
-                          {issue.fixable && <code>{issue.suggestedValue}</code>}
-                        </label>
-                      ))}
-                    </div>
+                    {relationshipIssues.length > 0 && (
+                      <div className="relationship-results-list">
+                        {relationshipIssues.slice(0, 500).map((issue) => (
+                          <label className={`relationship-issue ${issue.fixable ? "fixable" : ""}`} key={issue.id}>
+                            {issue.fixable ? (
+                              <input type="checkbox" checked={selectedRelationshipFixes.includes(issue.id)} onChange={() => toggleRelationshipFix(issue.id)} />
+                            ) : <span className="relationship-issue-marker">!</span>}
+                            <span><strong>Row {issue.row}: {issue.targetColumn}</strong>{issue.reason}</span>
+                            {issue.fixable && <code>{issue.suggestedValue}</code>}
+                          </label>
+                        ))}
+                      </div>
+                    )}
                     {relationshipIssues.length > 500 && <p className="relationship-limit">Showing the first 500 issues. Apply fixes in batches, then check again.</p>}
                   </div>
                 )}
@@ -3142,30 +3786,108 @@ function App() {
             )}
           </div>
 
-          <div className="issue-jump-bar">
+          <section className="table-control-deck" aria-label="Table and selected column controls">
+            <div className="column-control-row">
+              {selectedColumn ? (
+                <>
+                  <div className="selected-column-summary">
+                    <span className="field-label">Selected column</span>
+                    <strong title={selectedColumn}>{selectedColumn}</strong>
+                    <small>Detected as {selectedDetectedType}</small>
+                  </div>
+                  <label className="column-type-control">
+                    <span>Type</span>
+                    <select
+                      value={selectedRule?.type ?? "Text"}
+                      onChange={(event) => handleExpectedTypeChange(selectedColumn, event.target.value)}
+                    >
+                      {TYPE_OPTIONS.map((type) => (
+                        <option key={type} value={type}>{type}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="column-rule-control">
+                    <div>
+                      <span>Validation rule</span>
+                      <strong title={getRuleDisplayName(selectedRule ?? createColumnRule("Text"))}>
+                        {getRuleDisplayName(selectedRule ?? createColumnRule("Text"))}
+                      </strong>
+                    </div>
+                    <button type="button" className="secondary-button" onClick={openRuleBuilder}>
+                      Configure
+                    </button>
+                  </div>
+                  <div className={`column-issue-count ${selectedColumnIssueCount ? "has-issues" : ""}`}>
+                    <span>Issues</span>
+                    <strong>{selectedColumnIssueCount.toLocaleString()}</strong>
+                  </div>
+                  {["Number", "Integer"].includes(selectedRule?.type) && (
+                    <div className="column-control-actions">
+                      <details className="column-convert-menu" key={selectedColumn}>
+                        <summary>Convert values</summary>
+                        <div>
+                          <button type="button" className="secondary-button" onClick={() => convertSelectedNumericColumn("Integer")}>
+                            Convert to Integer
+                          </button>
+                          {selectedRule?.type === "Number" && (
+                            <button type="button" className="secondary-button" onClick={() => convertSelectedNumericColumn("Number")}>
+                              Convert to Float
+                            </button>
+                          )}
+                        </div>
+                      </details>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="column-control-empty">
+                  <strong>Select a column</strong>
+                  <span>Choose a table cell, header, or column from the left to edit its type and rules</span>
+                </div>
+              )}
+            </div>
+
+            {numericConversionNotice && (
+              <div className="column-action-notice" role="status">{numericConversionNotice}</div>
+            )}
+
+            <div className="dataset-control-row">
               <div className="issue-jump-meta">
+                <span className="field-label">Dataset actions</span>
                 <strong>
-                  {validationIssues.length ? `Issue ${Math.max(currentIssueIndex + 1, 1)} / ${validationIssues.length.toLocaleString()}` : "Cleaning tools"}
+                  {validationIssues.length
+                    ? `${validationIssues.length.toLocaleString()} issue${validationIssues.length === 1 ? "" : "s"} found`
+                    : "No scanned issues"}
                 </strong>
                 <span>
-                  {activeIssue
-                    ? `Row ${activeIssue.row} • ${activeIssue.column} • ${activeIssue.reason}`
-                    : validationIssues.length ? "Jump through validation issues from here." : "Find, replace, and reverse data changes from here."}
+                  {validationIssues.length ? "Review the latest scan or continue cleaning" : "Clean the data and scan when you are ready"}
                 </span>
               </div>
               <div className="issue-jump-actions">
-                <button type="button" className="secondary-button" onClick={() => openCleaningTools("home")}>Cleaning Tools{capturedRecipeSteps.length ? ` (${capturedRecipeSteps.length})` : ""}</button>
-                <button type="button" onClick={() => openFillDialog(selectedColumn)} disabled={!validationIssues.length || hasUnscannedChanges}>Fill invalid values</button>
-                <button type="button" className="secondary-button" onClick={undo} disabled={!history.past.length}>Undo</button>
-                <button type="button" className="secondary-button" onClick={redo} disabled={!history.future.length}>Redo</button>
-                <button type="button" className={`secondary-button ${showIssueRowsOnly ? "active-view-button" : ""}`} onClick={() => setShowIssueRowsOnly((current) => !current)} disabled={!validationIssues.length || hasUnscannedChanges}>
-                  {showIssueRowsOnly ? "Show All Rows" : "Issues Only"}
-                </button>
-                <button type="button" onClick={jumpToNextIssue} disabled={!validationIssues.length}>Next Row</button>
+                <div className="issue-jump-action-row issue-jump-history-actions">
+                  <button type="button" className="secondary-button" onClick={() => openCleaningTools("home")}>Cleaning Tools{capturedRecipeSteps.length ? ` (${capturedRecipeSteps.length})` : ""}</button>
+                  <button type="button" className="secondary-button" onClick={undo} disabled={!history.past.length}>Undo</button>
+                  <button type="button" className="secondary-button" onClick={redo} disabled={!history.future.length}>Redo</button>
+                </div>
+                <div className="issue-jump-action-row issue-jump-workflow-actions">
+                  {scanBlockerMessage && <span className="scan-blocker-message" role="alert">{scanBlockerMessage}</span>}
+                  <button type="button" onClick={scanForIssues} disabled={!canScan || isScanning}>
+                    {isScanning ? "Scanning..." : lastScannedAt ? "Scan Again" : "Scan"}
+                  </button>
+                  <button type="button" className={`secondary-button ${showIssueRowsOnly ? "active-view-button" : ""}`} onClick={() => setShowIssueRowsOnly((current) => !current)} disabled={!validationIssues.length || hasUnscannedChanges}>
+                    {showIssueRowsOnly ? "Show All Rows" : "Display invalid rows"}
+                  </button>
+                  <button type="button" className="secondary-button" onClick={() => openFillDialog(selectedColumn)} disabled={!validationIssues.length || hasUnscannedChanges}>
+                    Fill issues{validationIssues.length ? ` (${validationIssues.length.toLocaleString()})` : ""}
+                  </button>
+                </div>
               </div>
             </div>
+          </section>
 
-          <div className="ag-theme-quartz table-grid">
+          <div className={`ag-theme-quartz table-grid ${tableFeedback ? `table-feedback-${tableFeedback.kind}` : ""}`}>
+            <ScanOverlay active={isScanning} />
+            <CleaningFeedbackLayer event={tableFeedback} reduced={isEffectsReduced} />
             <AgGridReact
               ref={gridRef}
               rowData={gridRows}
@@ -3177,6 +3899,11 @@ function App() {
               rowSelection={GRID_ROW_SELECTION}
               onCellValueChanged={handleCellValueChanged}
               onColumnMoved={handleColumnMoved}
+              onColumnHeaderClicked={(event) => {
+                if (event.column?.getColId() && event.column.getColId() !== "__rowId") {
+                  selectColumn(event.column.getColId());
+                }
+              }}
               suppressDragLeaveHidesColumns
               onCellClicked={(event) => {
                 if (event.colDef.field && event.colDef.field !== "__rowId") {
@@ -3189,132 +3916,55 @@ function App() {
         </section>
       </section>
 
-      <aside className="inspector">
-        <div className="section-label">Column Inspector</div>
-        {selectedColumn ? (
-          <>
-            <div className="inspector-header">
-              <h2>{selectedColumn}</h2>
-              <p>
-                Detected as <strong>{inferColumnType(rows, selectedColumn)}</strong>
-              </p>
-            </div>
-
-            <div className="inspector-stats">
-              <InspectorStat label="Visible" value={visibleColumns.includes(selectedColumn) ? "Yes" : "No"} />
-              <InspectorStat
-                label="Issues"
-                value={selectedColumnIssueCount.toLocaleString()}
-                tone={selectedColumnIssueCount ? "danger" : "default"}
-              />
-            </div>
-
-            <div className="type-card">
-              <label>
-                <span>Type</span>
-                <select
-                  value={selectedRule?.type ?? "Text"}
-                  onChange={(event) => handleExpectedTypeChange(selectedColumn, event.target.value)}
-                >
-                  {TYPE_OPTIONS.map((type) => (
-                    <option key={type} value={type}>{type}</option>
-                  ))}
-                </select>
-              </label>
-              <div className="rule-summary">
-                <span>Validation rule</span>
-                <strong>{getRuleDisplayName(selectedRule ?? createColumnRule("Text"))}</strong>
-              </div>
-              <button type="button" className="secondary-button" onClick={openRuleBuilder}>
-                Configure rule
-              </button>
-            </div>
-            <div className="inspector-fill-card">
-              <div>
-                <span className="field-label">Fill detected values</span>
-                <p>{selectedColumnIssueCount ? `${selectedColumnIssueCount.toLocaleString()} empty or invalid cell${selectedColumnIssueCount === 1 ? "" : "s"} found in this column.` : "Run a scan to find values that can be filled."}</p>
-              </div>
-              <button type="button" className="secondary-button" onClick={() => openFillDialog(selectedColumn)} disabled={!selectedColumnIssueCount}>
-                Choose filling method
-              </button>
-            </div>
-            {["Number", "Integer"].includes(selectedRule?.type) && (
-              <div className="numeric-conversion-card">
-                <div>
-                  <span className="field-label">Normalize numeric values</span>
-                  <p>Convert every valid number in this column. Invalid and empty cells are left unchanged.</p>
-                </div>
-                <div className="numeric-conversion-actions">
-                  <button type="button" className="secondary-button" onClick={() => convertSelectedNumericColumn("Integer")}>
-                    Convert column to Integer
-                  </button>
-                  {selectedRule?.type === "Number" && (
-                    <button type="button" className="secondary-button" onClick={() => convertSelectedNumericColumn("Number")}>
-                      Convert column to Float
-                    </button>
-                  )}
-                </div>
-                {numericConversionNotice && <div className="numeric-conversion-notice">{numericConversionNotice}</div>}
-              </div>
-            )}
-            {!!invalidVisibleRegexColumns.length && (
-              <div className="regex-blocker">
-                Fix invalid custom regex rules before scanning visible columns.
-              </div>
-            )}
-            {!!invalidVisibleMissingColumns.length && (
-              <div className="regex-blocker">
-                Finish the conditional missing-value rules before scanning visible columns.
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="empty-state">
-            <h2>No column selected</h2>
-            <p>Select a column from the table or sidebar to edit its type and format.</p>
-          </div>
-        )}
-      </aside>
-      {isChallengeBrowserOpen && (
-        <div className="challenge-browser-backdrop" onMouseDown={() => setIsChallengeBrowserOpen(false)}>
-          <section className="challenge-browser" role="dialog" aria-modal="true" aria-labelledby="challenge-browser-title" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="challenge-browser-heading">
-              <div>
-                <span className="section-label">Clean something terrible</span>
-                <h2 id="challenge-browser-title">Cleaning Challenges</h2>
-                <p>{CHALLENGES.length} datasets and increasingly questionable decisions, your tools work exactly like they do in the normal app</p>
-              </div>
-              <button type="button" className="dialog-close" onClick={() => setIsChallengeBrowserOpen(false)}>Close</button>
-            </div>
-            <div className="challenge-card-grid">
-              {CHALLENGES.map((challenge) => {
-                const savedRecord = challengeRecords[challenge.id];
-                const record = hasCurrentChallengeRevision(challenge, savedRecord?.revision) ? savedRecord : null;
-                const hasSavedWorkspace = savedWorkspaceIds.includes(`challenge:${challenge.id}`);
-                return (
-                  <article className={`challenge-card ${challenge.accent} ${record?.complete ? "completed" : ""}`} key={challenge.id}>
-                    <div className="challenge-card-topline">
-                      <span>#{challenge.number}</span>
-                      <span>{challenge.difficulty}</span>
-                    </div>
-                    <h3>{challenge.title}</h3>
-                    <p>{challenge.subtitle}</p>
-                    <div className="challenge-card-stats">
-                      <span>{challenge.rowCount.toLocaleString()} rows</span>
-                      <span>{challenge.objectives.length} objectives</span>
-                      {record?.stars ? <span>{record.stars}/3 stars</span> : <span>Unplayed</span>}
-                    </div>
-                    <div className="challenge-card-actions">
-                      <button type="button" onClick={() => hasSavedWorkspace ? openChallenge(challenge.id) : requestChallengeStory(challenge.id)}>{hasSavedWorkspace ? "Continue" : "Start"}</button>
-                      {hasSavedWorkspace && <button type="button" className="secondary-button" onClick={() => requestChallengeStory(challenge.id, true)}>Restart</button>}
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          </section>
-        </div>
+      {(viewMode === "campaign" || activeChallenge) && (
+        <Clipbit
+          message={clipbitReaction.message}
+          mood={clipbitReaction.mood}
+          minimized={isClipbitMinimized}
+          campaign={viewMode === "campaign"}
+          onToggle={() => setIsClipbitMinimized((current) => !current)}
+          onMinimize={() => setIsClipbitMinimized(true)}
+          breakSignal={clipbitBreakSignal}
+          onPester={async () => {
+            await enableGameAudio();
+            playSound("clipbit");
+            if (activeChallenge) setRunStats((current) => ({ ...current, clipbitClicks: current.clipbitClicks + 1 }));
+            const reaction = CLIPBIT_PESTER_REACTIONS[clipbitPesterCountRef.current % CLIPBIT_PESTER_REACTIONS.length];
+            clipbitPesterCountRef.current += 1;
+            setClipbitReaction(reaction);
+          }}
+          onRage={async () => {
+            await enableGameAudio();
+            playSound("clipbitBreak");
+            if (activeChallenge) setRunStats((current) => ({ ...current, clipbitClicks: current.clipbitClicks + 1 }));
+            setClipbitReaction({
+              message: "CLICK LIMIT EXCEEDED and Clipbit.exe has rage quit the spreadsheet",
+              mood: "angry",
+            });
+          }}
+        />
       )}
+      {isAchievementsOpen && (
+        <AchievementsDialog
+          progress={gameProgress}
+          onClose={() => setIsAchievementsOpen(false)}
+          onReset={resetPlayerProgress}
+        />
+      )}
+      <AchievementToast achievement={activeAchievement} />
+      {viewMode === "workspace" && activeChallenge && (
+        <OfficeChat
+          messages={officeMessages}
+          open={isOfficeChatOpen}
+          onOpen={() => setIsOfficeChatOpen(true)}
+          onClose={() => setIsOfficeChatOpen(false)}
+        />
+      )}
+      <CleaningFeedbackLayer
+        event={isViewportFeedback ? activeFeedback : null}
+        reduced={isEffectsReduced}
+        placement="viewport"
+      />
       {pendingChallengeLaunch && storyChallenge && (
         <div className="challenge-story-backdrop" onMouseDown={closeChallengeStory}>
           <section className={`challenge-story-dialog ${storyChallenge.accent}`} role="dialog" aria-modal="true" aria-labelledby="challenge-story-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -3341,7 +3991,10 @@ function App() {
                 if (!isChallengeStoryPageComplete) revealChallengeStoryPage();
               }}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && !isChallengeStoryPageComplete) revealChallengeStoryPage();
+                if (["Enter", " "].includes(event.key) && !isChallengeStoryPageComplete) {
+                  event.preventDefault();
+                  revealChallengeStoryPage();
+                }
               }}
             >
               <span className="challenge-story-label">Incident report</span>
@@ -3388,13 +4041,18 @@ function App() {
           <section className="challenge-result" role="dialog" aria-modal="true" aria-labelledby="challenge-result-title" onMouseDown={(event) => event.stopPropagation()}>
             <span className="section-label">Dataset cleaned</span>
             <h2 id="challenge-result-title">{activeChallenge.title}</h2>
-            <div className="challenge-result-stars" aria-label={`${challengeEvaluation.stars} stars`}>{"*".repeat(challengeEvaluation.stars)}{"o".repeat(3 - challengeEvaluation.stars)}</div>
-            <p>{challengeEvaluation.score}% complete in {challengeEvaluation.moves} recorded move{challengeEvaluation.moves === 1 ? "" : "s"}</p>
+            <div className={`challenge-result-grade grade-${challengeScore.grade.toLowerCase()}`} aria-label={`Grade ${challengeScore.grade}`}>{challengeScore.grade}</div>
+            <p>{challengeScore.total}/100 points in {challengeScore.moves} move{challengeScore.moves === 1 ? "" : "s"} with a best combo of x{challengeScore.maxCombo}</p>
+            <div className="challenge-score-breakdown">
+              {Object.entries(challengeScore.breakdown).map(([label, value]) => (
+                <span key={label}><small>{label}</small><strong>{value}</strong></span>
+              ))}
+            </div>
             <div className="challenge-result-actions">
               <button type="button" className="secondary-button" onClick={() => setIsChallengeResultOpen(false)}>Keep cleaning</button>
               <button type="button" onClick={() => {
                 setIsChallengeResultOpen(false);
-                setIsChallengeBrowserOpen(true);
+                showCampaign();
               }}>Choose another mess</button>
             </div>
           </section>
@@ -3472,10 +4130,19 @@ function App() {
                 </div>
               </fieldset>
 
-              {fillDraft.method === "custom" && (
+              {selectedFillMethod?.usesCustomValue && (
                 <label className="fill-field">
-                  <span>Replacement value</span>
-                  <input value={fillDraft.customValue} onChange={(event) => setFillDraft((draft) => ({ ...draft, customValue: event.target.value }))} placeholder="NaN or leave empty" />
+                  <span>{fillDraft.method === "customDate" ? "Replacement date" : "Replacement value"}</span>
+                  <input
+                    type={fillDraft.method === "customDate" ? "date" : "text"}
+                    value={fillDraft.method === "customDate" ? fillDraft.customDate : fillDraft.customValue}
+                    onChange={(event) => setFillDraft((draft) => (
+                      fillDraft.method === "customDate"
+                        ? { ...draft, customDate: event.target.value }
+                        : { ...draft, customValue: event.target.value }
+                    ))}
+                    placeholder={fillDraft.method === "customDate" ? "" : "NaN, unknown, or leave empty"}
+                  />
                 </label>
               )}
               {selectedFillMethod?.supportsGrouping && (
@@ -3544,7 +4211,7 @@ function App() {
       {isRuleBuilderOpen && ruleDraft && (
         <div className="rule-builder-backdrop" onMouseDown={() => setIsRuleBuilderOpen(false)}>
           <section
-            className="rule-builder-dialog"
+            className={`rule-builder-dialog ${ruleDraft.mode === "friendly" && ruleDraft.type === "Category" ? "category-rule-builder-dialog" : ""}`}
             role="dialog"
             aria-modal="true"
             aria-labelledby="rule-builder-title"
@@ -3601,48 +4268,61 @@ function App() {
                     <button type="button" className="secondary-button" onClick={() => addAllowedValues()}>Add</button>
                   </div>
                   <p className="rule-helper">Paste values separated by commas or new lines.</p>
-                  <div className="existing-value-entry">
-                    <select value={existingCategoryValue} onChange={(event) => setExistingCategoryValue(event.target.value)}>
-                      <option value="">Add a value already in this column</option>
-                      {(categoryOptionsByColumn[selectedColumn] ?? []).map((value) => <option key={value} value={value}>{value}</option>)}
-                    </select>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      disabled={!existingCategoryValue}
-                      onClick={() => {
-                        addAllowedValues(existingCategoryValue);
-                        setExistingCategoryValue("");
-                      }}
-                    >
-                      Add existing
-                    </button>
-                  </div>
-                  <button type="button" className="existing-values-toggle" onClick={() => setIsExistingCategoryListOpen((isOpen) => !isOpen)}>
-                    {isExistingCategoryListOpen ? "Hide existing values" : `Show all existing values (${(categoryOptionsByColumn[selectedColumn] ?? []).length.toLocaleString()})`}
-                  </button>
-                  {isExistingCategoryListOpen && (
-                    <div className="existing-values-list">
-                      <input value={existingCategoryFilter} onChange={(event) => setExistingCategoryFilter(event.target.value)} placeholder="Filter existing values" />
-                      <span className="existing-values-heading">Available values</span>
-                      <div className="existing-values-options">
-                        {(categoryOptionsByColumn[selectedColumn] ?? [])
-                          .filter((value) => !ruleDraft.allowedValues.includes(value))
-                          .filter((value) => value.toLowerCase().includes(existingCategoryFilter.trim().toLowerCase()))
-                          .map((value) => (
-                            <button type="button" key={value} className="existing-value-option" onClick={() => addAllowedValues(value)}>
-                              <span>{value}</span><span>Add</span>
-                            </button>
-                          ))}
+                  <div className="category-values-picker">
+                    <section className="existing-values-list category-values-pane">
+                      <div className="category-values-pane-heading">
+                        <div>
+                          <strong>Values found in column</strong>
+                          <span>{existingCategoryOptions.length.toLocaleString()} unique values</span>
+                        </div>
+                        <button type="button" className="secondary-button" disabled={!filteredExistingCategoryOptions.length} onClick={addShownCategoryValues}>Add all</button>
                       </div>
-                    </div>
-                  )}
-                  <div className="value-chip-list">
-                    {(ruleDraft.allowedValues ?? []).map((value) => (
-                      <button type="button" className="value-chip" key={value} onClick={() => removeAllowedValue(value)}>
-                        {value} <span aria-hidden="true">x</span>
-                      </button>
-                    ))}
+                      <div className="existing-values-toolbar">
+                        <input value={existingCategoryFilter} onChange={(event) => setExistingCategoryFilter(event.target.value)} placeholder="Search existing values" />
+                        <strong>{selectedExistingCategoryCount.toLocaleString()} selected</strong>
+                      </div>
+                      <div className="existing-values-options">
+                        {filteredExistingCategoryOptions.map((value) => {
+                          const isSelected = ruleDraft.allowedValues.includes(value);
+                          return (
+                            <button
+                              type="button"
+                              key={value}
+                              className={`existing-value-option ${isSelected ? "is-selected" : ""}`}
+                              aria-pressed={isSelected}
+                              onClick={() => toggleExistingCategoryValue(value)}
+                            >
+                              <span className="existing-value-check" aria-hidden="true">{isSelected ? "X" : ""}</span>
+                              <span className="existing-value-name">{value}</span>
+                              <span className="existing-value-state">{isSelected ? "Added" : "Add"}</span>
+                            </button>
+                          );
+                        })}
+                        {!filteredExistingCategoryOptions.length && (
+                          <div className="existing-values-empty">
+                            {existingCategoryOptions.length ? "No values match this search" : "This column has no existing values"}
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                    <section className="allowed-values-current category-values-pane">
+                      <div className="category-values-pane-heading">
+                        <div>
+                          <strong>Allowed values</strong>
+                          <span>{(ruleDraft.allowedValues ?? []).length.toLocaleString()} selected</span>
+                        </div>
+                        <button type="button" className="secondary-button" disabled={!ruleDraft.allowedValues.length} onClick={() => updateRuleDraft("allowedValues", [])}>Clear all</button>
+                      </div>
+                      <div className="allowed-values-list">
+                        {(ruleDraft.allowedValues ?? []).map((value) => (
+                          <button type="button" className="allowed-value-option" key={value} onClick={() => removeAllowedValue(value)}>
+                            <span>{value}</span>
+                            <span>Remove</span>
+                          </button>
+                        ))}
+                        {!ruleDraft.allowedValues.length && <span className="allowed-values-empty">Pick values from the list on the left or type your own above</span>}
+                      </div>
+                    </section>
                   </div>
                 </div>
               )}
@@ -3790,15 +4470,6 @@ function HintCode({ children, hint }) {
       <code>{children}</code>
       <span className="hint-tooltip" role="tooltip">{hint}</span>
     </span>
-  );
-}
-
-function InspectorStat({ label, value, tone = "default" }) {
-  return (
-    <div className={`inspector-stat ${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
   );
 }
 
@@ -4080,6 +4751,19 @@ function normalizeDateEditorValue(value) {
   return "";
 }
 
+function getFillReplacementValue(draft, rule) {
+  if (draft?.method !== "customDate") return draft?.customValue ?? "";
+  const isoDate = String(draft.customDate ?? "").trim();
+  const match = isoDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match || !isRealDate(Number(match[1]), Number(match[2]), Number(match[3]))) return "";
+  const [, year, month, day] = match;
+  const presetId = rule?.mode === "preset" ? rule.presetId : "date-iso-dash";
+  if (presetId === "date-iso-slash") return `${year}/${month}/${day}`;
+  if (presetId === "date-us") return `${month}/${day}/${year}`;
+  if (presetId === "date-eu") return `${day}/${month}/${year}`;
+  return isoDate;
+}
+
 function isEmptyValue(value) {
   return String(value ?? "").trim() === "";
 }
@@ -4144,15 +4828,6 @@ function readSavedRelationships() {
       : [];
   } catch {
     return [];
-  }
-}
-
-function readChallengeRecords() {
-  try {
-    const records = JSON.parse(window.localStorage.getItem("cleansheet.challenge-records") ?? "{}");
-    return records && typeof records === "object" && !Array.isArray(records) ? records : {};
-  } catch {
-    return {};
   }
 }
 
@@ -4550,6 +5225,10 @@ function isBoolean(value, presetId = "boolean-common") {
 
 function isCategory(value) {
   return String(value ?? "").trim() !== "";
+}
+
+function formatIssueLabel(count) {
+  return `${count.toLocaleString()} ${count === 1 ? "issue" : "issues"}`;
 }
 
 createRoot(document.getElementById("root")).render(<App />);

@@ -1,25 +1,162 @@
+const RETAIL_SOURCE_COLUMNS = ["Invoice", "StockCode", "Description", "Quantity", "InvoiceDate", "Price", "Customer ID", "Country"];
+const RETAIL_COUNTRIES = [
+  "Australia",
+  "Austria",
+  "Bahrain",
+  "Belgium",
+  "Channel Islands",
+  "Cyprus",
+  "Denmark",
+  "Finland",
+  "France",
+  "Germany",
+  "Greece",
+  "Hong Kong",
+  "Iceland",
+  "Ireland",
+  "Israel",
+  "Italy",
+  "Japan",
+  "Lebanon",
+  "Lithuania",
+  "Netherlands",
+  "Norway",
+  "Poland",
+  "Portugal",
+  "Singapore",
+  "Spain",
+  "Sweden",
+  "Switzerland",
+  "United Arab Emirates",
+  "United Kingdom",
+];
+const RETAIL_EXPORT_COLUMNS = [
+  "Invoice",
+  "InvoiceDate",
+  "Invoice Date",
+  "Invoice Time",
+  "StockCode",
+  "Description",
+  "Product Label",
+  "Quantity",
+  "Price",
+  "Line Total",
+  "Customer ID",
+  "Country",
+];
+
 export const CHALLENGES = [
   {
+    id: "boot-sequence",
+    revision: 2,
+    number: 0,
+    title: "Boot Sequence",
+    subtitle: "The training file is somehow already broken",
+    difficulty: "Tutorial",
+    preview: [
+      "Learn the cleaning tools by repairing a small sales file one problem at a time",
+      "You will set types, build formulas, clean categories and decide what to do with missing dates",
+    ],
+    rowCount: 10000,
+    accent: "teal",
+    tutorial: true,
+    dataFile: "./sample_sales.csv",
+    story: [
+      "CleanSheet OS failed its morning check and the training file is leaking ERROR and UNKNOWN everywhere",
+      "I am Clipbit your highly qualified recovery assistant and I definitely did not break it before you arrived",
+      "Repair the numbers categories and dates then remove the rows that cannot be calculated and the rest of the desktop will wake up",
+    ],
+    hints: [],
+    assistant: {
+      start: "Welcome to Boot Sequence and yes the tutorial file is ten thousand rows because nobody here understands restraint",
+      noProgress: "That scan found the same mess again so try changing one column type before we stare at it a third time",
+      win: "The desktop booted and against every prediction you are now allowed near the real files",
+    },
+    office: {
+      sender: "Mona",
+      department: "IT desk",
+      start: "Morning and please ignore the smoke coming from the training file",
+      trouble: [
+        "The scanner found {{issueLabel}} which is more than zero and therefore officially your problem",
+        "Still seeing {{issueLabel}} and the computer has started making a noise I do not recognize",
+      ],
+      progress: "{{objective}} is fixed and one of the warning lights just turned off",
+      cleanScan: "The visible columns look clean so check the objectives before celebrating near the server",
+      delete: "Those rows were beyond repair and I have placed them in the digital bin",
+      formula: "The totals are calculating again and finance can stop breathing into my phone",
+      schema: "A column changed and somehow the machine accepted it",
+      win: "Boot complete and I am closing this ticket before anything else catches fire",
+    },
+    objectives: [
+      { id: "boot-numbers", title: "Clean the three number columns", kind: "scanClean", columns: ["Quantity", "Price Per Unit", "Total Spent"], expectedTypes: { Quantity: "Number", "Price Per Unit": "Number", "Total Spent": "Number" } },
+      { id: "boot-formula", title: "Make every total add up", kind: "formula", left: "Quantity", right: "Price Per Unit", target: "Total Spent", operator: "*", tolerance: 0.01 },
+      { id: "boot-items", title: "Repair the Item choices", kind: "allowedValues", column: "Item", expectedType: "Category", values: ["Coffee", "Tea", "Sandwich", "Salad", "Cake", "Cookie", "Smoothie", "Juice"] },
+      { id: "boot-payments", title: "Repair the Payment Method choices", kind: "allowedValues", column: "Payment Method", expectedType: "Category", values: ["Cash", "Credit Card", "Digital Wallet"] },
+      { id: "boot-location", title: "Repair the Location choices", kind: "allowedValues", column: "Location", expectedType: "Category", values: ["In-store", "Takeaway"] },
+      { id: "boot-dates", title: "Clean every transaction date", kind: "patternMatch", column: "Transaction Date", expectedType: "Date", pattern: "^\\d{4}-\\d{2}-\\d{2}$", allowBlank: true, requireAllowedMissingWhenBlank: true },
+    ],
+    rules: [
+      {
+        id: "boot-row-cleanup",
+        title: "Only remove rows that cannot be recovered",
+        kind: "guidedRowCleanup",
+        requiredColumns: ["Quantity", "Price Per Unit", "Total Spent"],
+        minimumValidRequiredValues: 2,
+        requiredDeletions: 58,
+        optionalColumn: "Transaction Date",
+        optionalInvalidValues: ["", "ERROR", "UNKNOWN"],
+      },
+    ],
+  },
+  {
     id: "cafe-closing-time",
-    revision: 3,
+    revision: 4,
     number: 1,
     title: "Cafe Closing Time",
     subtitle: "A kid on the loose",
     difficulty: "Warm up",
+    preview: [
+      "Rebuild a cafe stock report and make every closing count believable again",
+      "Expect ID and date formats, category cleanup, formulas and one completely useless column",
+    ],
     rowCount: 30,
     accent: "orange",
-    parMoves: 8,
     story: [
       "Today is Bring Your Kid to Work Day at the cafe and somebody left the stock spreadsheet open",
       "The kid deleted the closing stock column and replaced it with snack reviews because apparently the muffins needed feedback",
       "Put the stock count back together and remove the reviews before you get demoted to customer",
     ],
     hints: [
+      "Stock Check ID follows CAFE-001 and Stock Date follows YYYY-MM-DD",
       "Opening Stock, Delivered, Sold, Wasted and Closing Stock should be Number columns",
       "Create Closing Stock and use [Opening Stock] + [Delivered] - [Sold] - [Wasted]",
       "Kid Notes does not belong in the final stock report",
     ],
+    assistant: {
+      start: "A child reviewed the inventory and the chocolate syrup received five stars so we should probably move quickly",
+      noProgress: "The muffins remain reviewed and the closing stock remains missing which is a strange way to run finance",
+      win: "Stock restored and the child has been moved away from the keyboard for legal reasons",
+    },
+    office: {
+      sender: "Samir",
+      department: "Cafe manager",
+      start: "Please fix the stock file and do not read the review about my muffins",
+      trouble: [
+        "The report still has {{issueLabel}} and the lunch rush starts soon",
+        "I checked again and the spreadsheet is still more organized than the kitchen",
+      ],
+      progress: "{{objective}} is done and I may let you have one free coffee",
+      cleanScan: "The scan is clean but the closing stock still needs to make sense",
+      delete: "If those rows were snack reviews then they deserved it",
+      formula: "Closing stock is back and I am choosing to trust the numbers",
+      schema: "That new column looks useful which is already better than Kid Notes",
+      win: "The report is fixed and you are no longer being demoted to customer",
+    },
     objectives: [
+      { id: "cafe-id", title: "Repair the stock check IDs", kind: "patternMatch", column: "Stock Check ID", pattern: "^CAFE-[0-9]{3}$" },
+      { id: "cafe-date", title: "Repair the stock dates", kind: "patternMatch", column: "Stock Date", expectedType: "Date", pattern: "^2026-07-[0-9]{2}$" },
+      { id: "cafe-items", title: "Clean the Item choices", kind: "allowedValues", column: "Item", expectedType: "Category", values: ["Coffee beans", "Oat milk", "Croissants", "Paper cups", "Chocolate syrup"] },
+      { id: "cafe-numbers", title: "Set the stock columns to Number", kind: "types", expected: { "Opening Stock": "Number", Delivered: "Number", Sold: "Number", Wasted: "Number" } },
       { id: "closing-stock", title: "Rebuild the closing stock column", kind: "calculatedColumn", target: "Closing Stock", expectedType: "Number", formula: "[Opening Stock] + [Delivered] - [Sold] - [Wasted]", tolerance: 0.01 },
       { id: "remove-notes", title: "Delete the kid reviews", kind: "columnsAbsent", columns: ["Kid Notes"] },
     ],
@@ -30,28 +167,55 @@ export const CHALLENGES = [
   },
   {
     id: "signup-swamp",
-    revision: 2,
+    revision: 3,
     number: 2,
     title: "Signup Swamp",
     subtitle: "Marketing collected leads with enthusiasm, not standards.",
     difficulty: "Messy",
+    preview: [
+      "Turn a giveaway signup dump into contact data that can actually be used",
+      "Repair IDs, emails and phones then split names and decide which empty values are allowed",
+    ],
     rowCount: 90,
     accent: "coral",
-    parMoves: 12,
     story: [
       "Marketing ran a giveaway for a free air fryer and collected ninety leads from a form nobody tested",
       "Some emails forgot the @ sign and the phone numbers look like people entered them during an earthquake and Status has no idea what it wants to be",
       "Clean the contacts and calm down the Status column and remember that some people simply did not leave a phone number",
     ],
     hints: [
-      "Status should only contain Active, Paused, or Closed.",
-      "Phone is optional here; configure its missing-value policy before scanning.",
+      "Lead ID follows LEAD-1000 and Name can be split on its space",
+      "Status should only contain Active, Paused, or Closed",
+      "Phone is optional here and NULL or N/A should count as missing",
     ],
+    assistant: {
+      start: "Marketing promised these leads are valuable and marketing also thinks NULL is a phone number",
+      noProgress: "The leads are still swamp shaped so Email or Phone would be a good place to begin",
+      win: "The contacts are usable and the air fryer giveaway can continue ruining everyone else's day",
+    },
+    office: {
+      sender: "Lina",
+      department: "Marketing",
+      start: "These leads are extremely valuable because ninety people wanted a free air fryer",
+      trouble: [
+        "The scanner found {{issueLabel}} in the contact data and I blame the form",
+        "Somebody entered an email without an at sign and honestly I respect the confidence",
+      ],
+      progress: "{{objective}} is done and the campaign dashboard has stopped yelling",
+      cleanScan: "The visible contacts look clean so make sure the optional phone rules are not forgotten",
+      delete: "Please do not delete all my leads or I will have to run another giveaway",
+      formula: "I did not know marketing had formulas but nice work",
+      schema: "New columns for the names look much better than one giant Name blob",
+      win: "The swamp is gone and these people can finally receive too many emails",
+    },
     objectives: [
-      { id: "status-values", title: "Tame the status spellings", kind: "allowedValues", column: "Status", values: ["Active", "Paused", "Closed"] },
-      { id: "phone-optional", title: "Allow genuinely missing phone numbers", kind: "missingPolicy", column: "Phone", policy: "allowed" },
+      { id: "lead-ids", title: "Repair the lead IDs", kind: "patternMatch", column: "Lead ID", pattern: "^LEAD-[0-9]{4}$" },
+      { id: "split-names", title: "Split every lead name", kind: "transformedColumns", operation: "split", source: "Name", outputs: ["First Name", "Last Initial"], separator: "whitespace" },
       { id: "emails-clean", title: "Fix the broken email addresses", kind: "scanClean", columns: ["Email"], expectedType: "Email" },
       { id: "phones-clean", title: "Fix the invalid phone numbers", kind: "scanClean", columns: ["Phone"], expectedType: "Phone" },
+      { id: "phone-optional", title: "Allow genuinely missing phone numbers", kind: "missingPolicy", column: "Phone", policy: "allowed", tokens: ["NULL", "N/A"] },
+      { id: "status-values", title: "Tame the status spellings", kind: "allowedValues", column: "Status", expectedType: "Category", values: ["Active", "Paused", "Closed"] },
+      { id: "source-values", title: "Clean the signup sources", kind: "allowedValues", column: "Source", expectedType: "Category", values: ["Event", "Website", "Referral"] },
     ],
     rules: [
       { id: "keep-leads", title: "Keep all ninety leads", kind: "rowCount", minimum: 90, maximum: 90 },
@@ -60,28 +224,56 @@ export const CHALLENGES = [
   },
   {
     id: "warehouse-echoes",
-    revision: 2,
+    revision: 3,
     number: 3,
     title: "Warehouse Echoes",
     subtitle: "The scanner hiccupped and submitted orders twice.",
     difficulty: "Tricky",
+    preview: [
+      "Untangle repeated warehouse orders without deleting the real shipments",
+      "Normalize messy labels, remove duplicates and build totals plus storage labels",
+    ],
     rowCount: 172,
     accent: "sand",
-    parMoves: 10,
     story: [
       "The warehouse scanner started beeping twice and the supervisor fixed it using the ancient technique of hitting it with his hand",
       "The scanner took that personally and copied a bunch of orders and also threw random spaces and capital letters into Product and Zone",
       "Remove the clones and clean the labels and please keep one real copy of every order or the warehouse will ship nothing",
     ],
     hints: [
-      "Order ID should be unique.",
-      "Text Cleanup can fix casing and repeated spaces in batches.",
-      "Duplicates can compare one or several selected columns.",
+      "Order ID follows WH-0001 and should stay unique",
+      "Text Cleanup can fix casing and repeated spaces in batches",
+      "Bins multiplied by Quantity gives Total Units",
+      "Combine Product and Zone using a space, vertical bar and another space",
     ],
+    assistant: {
+      start: "The scanner made clones and the supervisor hit it again which somehow did not improve the situation",
+      noProgress: "I can still hear duplicate orders echoing through the warehouse",
+      win: "One real order remains for every shipment and the scanner has been placed in timeout",
+    },
+    office: {
+      sender: "Omar",
+      department: "Warehouse floor",
+      start: "The scanner beeped twice again and the supervisor is warming up his hitting hand",
+      trouble: [
+        "The map shows {{issueLabel}} and at least three boxes are where boxes should not be",
+        "The orders still have clones and nobody knows which scanner started it",
+      ],
+      progress: "{{objective}} is done and the echo in aisle four got quieter",
+      cleanScan: "The scan looks clean but duplicates do not care about scans",
+      delete: "One copy is enough and the warehouse does not need backup shipments",
+      formula: "Total Units is calculating and the forklift driver says thanks",
+      schema: "The new storage label may actually help us find things",
+      win: "Every real order has one copy and the scanner is facing the wall",
+    },
     objectives: [
+      { id: "warehouse-ids", title: "Repair the warehouse order IDs", kind: "patternMatch", column: "Order ID", pattern: "^WH-[0-9]{4}$" },
       { id: "unique-orders", title: "Remove the duplicate orders", kind: "unique", columns: ["Order ID"] },
-      { id: "zones", title: "Use one spelling for every warehouse zone", kind: "allowedValues", column: "Zone", values: ["North", "South", "East", "West"] },
-      { id: "products", title: "Clean the product names", kind: "allowedValues", column: "Product", values: ["Cable", "Keyboard", "Monitor", "Mouse"] },
+      { id: "zones", title: "Use one spelling for every warehouse zone", kind: "allowedValues", column: "Zone", expectedType: "Category", values: ["North", "South", "East", "West"] },
+      { id: "products", title: "Clean the product names", kind: "allowedValues", column: "Product", expectedType: "Category", values: ["Cable", "Keyboard", "Monitor", "Mouse"] },
+      { id: "warehouse-numbers", title: "Clean Bins and Quantity", kind: "scanClean", columns: ["Bins", "Quantity"], expectedTypes: { Bins: "Integer", Quantity: "Integer" } },
+      { id: "total-units", title: "Calculate Total Units", kind: "calculatedColumn", target: "Total Units", expectedType: "Integer", formula: "[Bins] * [Quantity]", tolerance: 0 },
+      { id: "storage-label", title: "Build the Storage Label", kind: "transformedColumns", operation: "combine", sources: ["Product", "Zone"], target: "Storage Label", separator: " | " },
     ],
     rules: [
       { id: "keep-orders", title: "Keep one copy of every real order", kind: "rowCount", minimum: 150, maximum: 150 },
@@ -90,29 +282,59 @@ export const CHALLENGES = [
   },
   {
     id: "support-night-shift",
-    revision: 2,
+    revision: 3,
     number: 4,
     title: "Support Night Shift",
     subtitle: "Resolution times vanished, but the team patterns survived.",
     difficulty: "Advanced",
+    preview: [
+      "Recover missing support times using patterns hidden inside each priority group",
+      "This challenge focuses on grouped medians, strict categories and calculated hours",
+    ],
     rowCount: 520,
     accent: "blue",
-    parMoves: 10,
     story: [
       "The night shift somehow closed all 520 support tickets and everyone celebrated for about six minutes",
       "Then someone opened the report and found a bunch of missing resolution times and naturally nobody remembers what happened",
       "Tickets with the same Priority usually take similar time so use their group medians and do not solve the problem by deleting the customers",
     ],
     hints: [
+      "Ticket ID follows T-20000 and Opened At follows YYYY-MM-DD HH:00",
       "Priority should contain only Low, Normal, High, and Urgent",
-      "Resolution Minutes is the column you are filling. Priority only decides which tickets belong in each group.",
-      "For each Priority group, fill the missing Resolution Minutes with that group's median.",
-      "Do not use Current Distribution for measured values.",
+      "Resolution Minutes is the column you are filling and Priority decides the groups",
+      "For each Priority group fill the missing Resolution Minutes with that group's median",
+      "Resolution Minutes divided by 60 gives Resolution Hours",
     ],
+    assistant: {
+      start: "The night shift solved every ticket and forgot how long any of it took which feels emotionally accurate",
+      noProgress: "Resolution time is still missing and pretending the clock did not exist will not complete the report",
+      win: "Every ticket has a believable time and management can return to measuring the wrong thing",
+    },
+    office: {
+      sender: "Maya",
+      department: "Support lead",
+      start: "Everyone closed their tickets and nobody recorded how long it took so naturally I need this report today",
+      trouble: [
+        "The scan found {{issueLabel}} and the morning shift is pretending not to see them",
+        "Resolution times are still missing and management has already opened the chart template",
+      ],
+      progress: "{{objective}} is done and one section of the report can finally be trusted",
+      cleanScan: "The visible data looks clean so check that each Priority received its own median",
+      delete: "Please keep the customers even if deleting them makes the report easier",
+      formula: "Resolution Hours now exists and management can have the unit they actually asked for",
+      schema: "The report has a new column and nobody filed a ticket about it",
+      win: "The report is ready and I can return to solving problems people caused by restarting nothing",
+    },
     objectives: [
-      { id: "priority-clean", title: "Clean up the Priority labels", kind: "allowedValues", column: "Priority", values: ["Low", "Normal", "High", "Urgent"] },
+      { id: "ticket-ids", title: "Repair the ticket IDs", kind: "patternMatch", column: "Ticket ID", pattern: "^T-[0-9]{5}$" },
+      { id: "opened-format", title: "Repair the Opened At format", kind: "patternMatch", column: "Opened At", expectedType: "Date", pattern: "^2026-06-[0-9]{2} [0-9]{2}:00$" },
+      { id: "priority-clean", title: "Clean up the Priority labels", kind: "allowedValues", column: "Priority", expectedType: "Category", values: ["Low", "Normal", "High", "Urgent"] },
+      { id: "agent-clean", title: "Clean up the Agent labels", kind: "allowedValues", column: "Agent", expectedType: "Category", values: ["Mina", "Omar", "Sara", "Yousef"] },
+      { id: "channel-clean", title: "Clean up the Channel labels", kind: "allowedValues", column: "Channel", expectedType: "Category", values: ["Email", "Chat", "Phone"] },
+      { id: "resolution-number", title: "Clean Resolution Minutes", kind: "scanClean", columns: ["Resolution Minutes"], expectedType: "Number" },
       { id: "resolution-complete", title: "Fill every missing resolution time", kind: "noMissing", columns: ["Resolution Minutes"] },
       { id: "resolution-medians", title: "Match each Priority median", kind: "groupMedianFill", idColumn: "Ticket ID", column: "Resolution Minutes", groupBy: "Priority", groups: ["Low", "Normal", "High", "Urgent"], tolerance: 0.01 },
+      { id: "resolution-hours", title: "Calculate Resolution Hours", kind: "calculatedColumn", target: "Resolution Hours", expectedType: "Number", formula: "[Resolution Minutes] / 60", tolerance: 0.01 },
     ],
     rules: [
       { id: "keep-tickets", title: "Keep every support ticket", kind: "rowCount", minimum: 520, maximum: 520 },
@@ -121,14 +343,17 @@ export const CHALLENGES = [
   },
   {
     id: "dataset-from-hell",
-    revision: 3,
+    revision: 4,
     number: 5,
     title: "Dataset From Hell",
     subtitle: "Eight thousand rows. Thirty bad ideas. One export button.",
     difficulty: "HELL",
+    preview: [
+      "Face a large mixed corruption test where nearly every cleaning tool joins the fight",
+      "Fix contacts, dates, money and categories before rebuilding a chained final charge",
+    ],
     rowCount: 8000,
     accent: "red",
-    parMoves: 30,
     story: [
       "An 11 year old got into the production database using the password admin123 and nobody in engineering wants to talk about it",
       "He tried downloading everything but his internet died halfway through and while clicking random buttons he deleted half the database",
@@ -140,10 +365,35 @@ export const CHALLENGES = [
       "Build Discount Amount first, then Tax Amount and finish with Final Charge because each formula needs the one before it",
       "Scan does not detect duplicates, open Cleaning Tools and compare Row Key in Duplicates",
     ],
+    assistant: {
+      start: "Eight thousand rows entered and common sense immediately left through the emergency exit",
+      noProgress: "The corruption meter did not move and the dataset appears pleased with itself",
+      win: "The curse is gone and admin123 has been promoted to admin1234",
+    },
+    office: {
+      sender: "Fahad",
+      department: "Engineering",
+      start: "We recovered the database and I need you to not ask how many times we used the word backup incorrectly",
+      trouble: [
+        "The scanner found {{issueLabel}} and the recovered file is somehow getting smug",
+        "The corruption is still alive and admin123 is no longer allowed in meetings",
+      ],
+      progress: "{{objective}} is done and the incident report just became slightly less embarrassing",
+      cleanScan: "Visible data is clean but this file hides problems like it was paid to do it",
+      delete: "Those rows have returned to the void where engineering found them",
+      formula: "One calculation chain is working so apply the rules in the correct order",
+      schema: "The table shape changed and nothing exploded which counts as a deployment",
+      win: "The database is clean and the password has been changed to something I am not telling you",
+    },
     objectives: [
-      { id: "boss-status", title: "Reduce Status to four real choices", kind: "allowedValues", column: "Status", values: ["Active", "Paused", "Closed", "Pending"] },
+      { id: "boss-row-key", title: "Repair every Row Key", kind: "patternMatch", column: "Row Key", pattern: "^ROW-[0-9]{6}$" },
       { id: "boss-unique", title: "Remove duplicate row keys", kind: "unique", columns: ["Row Key"] },
-      { id: "boss-scan", title: "Clear issues from the core columns", kind: "scanClean", columns: ["Email", "Phone", "Order Date", "Gross Amount", "Discount Percent", "Shipping Fee", "Tax Percent", "Status"], expectedTypes: { Email: "Email", Phone: "Phone", "Order Date": "Date", "Gross Amount": "Number", "Discount Percent": "Number", "Shipping Fee": "Number", "Tax Percent": "Number", Status: "Category" } },
+      { id: "boss-email", title: "Clean every Email", kind: "scanClean", columns: ["Email"], expectedType: "Email" },
+      { id: "boss-phone", title: "Clean every Phone", kind: "scanClean", columns: ["Phone"], expectedType: "Phone" },
+      { id: "boss-date", title: "Clean every Order Date", kind: "scanClean", columns: ["Order Date"], expectedType: "Date" },
+      { id: "boss-numbers", title: "Clean the money columns", kind: "scanClean", columns: ["Gross Amount", "Discount Percent", "Shipping Fee", "Tax Percent"], expectedTypes: { "Gross Amount": "Number", "Discount Percent": "Number", "Shipping Fee": "Number", "Tax Percent": "Number" } },
+      { id: "boss-status", title: "Reduce Status to four real choices", kind: "allowedValues", column: "Status", expectedType: "Category", values: ["Active", "Paused", "Closed", "Pending"] },
+      { id: "boss-paid", title: "Turn Paid into a real Boolean", kind: "scanClean", columns: ["Paid"], expectedType: "Boolean" },
       { id: "boss-legacy", title: "Delete the cursed old total", kind: "columnsAbsent", columns: ["Legacy Total"] },
       { id: "boss-discount", title: "Calculate every discount", kind: "calculatedColumn", target: "Discount Amount", expectedType: "Number", formula: "[Gross Amount] * [Discount Percent] / 100", tolerance: 0.02 },
       { id: "boss-tax", title: "Calculate tax after the discount", kind: "calculatedColumn", target: "Tax Amount", expectedType: "Number", formula: "([Gross Amount] - [Discount Amount]) * [Tax Percent] / 100", tolerance: 0.02 },
@@ -156,35 +406,146 @@ export const CHALLENGES = [
   },
   {
     id: "final-final-export",
-    revision: 2,
+    revision: 5,
     number: 6,
     title: "The Final Export",
-    subtitle: "Half a million rows and nobody remembers what any of them mean",
+    subtitle: "One hundred thousand rows and nobody remembers what any of them mean",
     difficulty: "HELL^2",
-    rowCount: 541910,
+    preview: [
+      "Prepare a huge retail archive for a strict export without flattening its strange accounting rules",
+      "Normalize text, recover groups, remove true duplicates and match an exact final schema",
+    ],
+    rowCount: 100000,
     accent: "orange",
-    parMoves: 20,
     dataFile: "./challenges/online_retail_2010_2011.csv",
     story: [
       "Finance found an old sales file named FINAL final use this one and naturally nobody remembers who made it",
-      "It has half a million transactions and thousands of duplicates and missing labels and enough strange numbers to start an argument",
+      "It has one hundred thousand transactions and hundreds of duplicates and some of those duplicates are hiding behind spaces and lowercase stock codes",
       "Remove the actual junk without deleting anonymous buyers cancellations or accounting adjustments that only look suspicious",
     ],
     hints: [
-      "Remove full duplicates by comparing all eight columns",
+      "Invoice accepts six digits with an optional A or C prefix and InvoiceDate follows M/D/YYYY H:mm",
+      "Customer ID accepts five digits but an empty Customer ID belongs to an anonymous buyer and is allowed",
+      "Description needs trimmed edges and collapsed spaces but keep its original capitalization",
+      "StockCode needs uppercase without removing special codes such as POST, D, M, or BANK CHARGES",
+      "Replace EIRE with Ireland before building the Country allowed values list",
+      "A missing Country can be recovered with Most Common Value inside Customer ID groups",
       "Rows without a Description have zero Price and should be removed",
-      "Missing Customer ID values belong to anonymous buyers and are allowed",
+      "Normalize Description and StockCode before comparing all eight source columns for duplicates",
+      "Split InvoiceDate on whitespace and combine StockCode with Description using a space, vertical bar, and another space",
+      "Line Total is Quantity multiplied by Price and the final column order is part of the export",
       "Invoices beginning with C are cancellations so their negative Quantity is valid",
       "Adjust bad debt rows are accounting adjustments so their negative Price is valid",
     ],
+    assistant: {
+      start: "One hundred thousand rows and the file name says final twice so this must be extremely trustworthy",
+      noProgress: "The file is still enormous and somehow not cleaner which is an impressive use of time",
+      win: "The final final export is actually final and nobody is allowed to rename it again",
+    },
+    office: {
+      sender: "Nora",
+      department: "Finance",
+      start: "This is the final file and yes I said that about the previous four files too",
+      trouble: [
+        "The scan found {{issueLabel}} and the monthly meeting is approaching at dangerous speed",
+        "The file is still dirty and Excel has already declined to comment",
+      ],
+      progress: "{{objective}} is done and the final export is becoming less fictional",
+      cleanScan: "The visible columns pass but check duplicates, transforms and the final column order",
+      delete: "Please remove junk rows and keep the strange accounting rows because apparently those are real",
+      formula: "Line Total is calculating and the accountants have stopped checking it by hand",
+      schema: "The export shape changed so compare it with the required order before sending anything",
+      win: "It is actually final and I have hidden the Save As button from everyone",
+    },
     objectives: [
-      { id: "retail-duplicates", title: "Remove duplicate transactions", kind: "unique", columns: ["Invoice", "StockCode", "Description", "Quantity", "InvoiceDate", "Price", "Customer ID", "Country"] },
-      { id: "retail-descriptions", title: "Remove rows with missing descriptions", kind: "noMissing", columns: ["Description"] },
-      { id: "retail-anonymous", title: "Allow anonymous Customer IDs", kind: "missingPolicy", column: "Customer ID", policy: "allowed" },
+      {
+        id: "retail-contract",
+        title: "Lock the transaction formats",
+        kind: "validationContract",
+        checks: [
+          {
+            column: "Invoice",
+            type: "Text",
+            mode: "customRegex",
+            matchMode: "full",
+            validSamples: ["536365", "C536379", "A563185"],
+            invalidSamples: ["53636", "X536365", "5363657"],
+          },
+          {
+            column: "InvoiceDate",
+            type: "Text",
+            mode: "customRegex",
+            matchMode: "full",
+            validSamples: ["12/1/2010 8:26", "8/12/2011 14:50"],
+            invalidSamples: ["2010-12-01", "13/1/2010 08:00", "12/1/2010"],
+          },
+          { column: "Quantity", type: "Integer" },
+          { column: "Price", type: "Number" },
+        ],
+      },
+      {
+        id: "retail-customer-contract",
+        title: "Protect anonymous Customer IDs",
+        kind: "validationContract",
+        checks: [
+          {
+            column: "Customer ID",
+            type: "Text",
+            mode: "customRegex",
+            matchMode: "full",
+            missingPolicy: "allowed",
+            validSamples: ["17850", "12347"],
+            invalidSamples: ["1785", "ABCDE", "123456"],
+          },
+        ],
+      },
+      { id: "retail-description-text", title: "Remove the whitespace mess", kind: "textNormalized", column: "Description", trimEdges: true, collapseWhitespace: true, caseMode: "keep" },
+      { id: "retail-stock-code-text", title: "Use one StockCode casing", kind: "textNormalized", column: "StockCode", trimEdges: false, collapseWhitespace: false, caseMode: "upper" },
+      {
+        id: "retail-countries",
+        title: "Build the Country list",
+        kind: "allowedValues",
+        column: "Country",
+        expectedType: "Category",
+        values: RETAIL_COUNTRIES,
+        allowBlank: true,
+        requireConfiguredValues: true,
+      },
+      {
+        id: "retail-country-recovery",
+        title: "Recover every missing Country",
+        kind: "groupConsistencyRecovery",
+        column: "Country",
+        groupBy: "Customer ID",
+        selector: { numericModulo: 7, remainder: 0 },
+        minimumGroups: 200,
+      },
+      { id: "retail-descriptions", title: "Remove rows with no product", kind: "noMissing", columns: ["Description"], minimumRows: 98777 },
+      { id: "retail-duplicates", title: "Reveal and remove duplicate transactions", kind: "unique", columns: RETAIL_SOURCE_COLUMNS },
+      {
+        id: "retail-export-schema",
+        title: "Prepare the export layout",
+        kind: "exportSchema",
+        split: { operation: "split", source: "InvoiceDate", outputs: ["Invoice Date", "Invoice Time"], separator: "whitespace" },
+        combine: { operation: "combine", sources: ["StockCode", "Description"], target: "Product Label", separator: " | " },
+        checks: [
+          { column: "Invoice Date", type: "Date", presetId: "date-us" },
+          {
+            column: "Invoice Time",
+            type: "Text",
+            mode: "customRegex",
+            matchMode: "full",
+            validSamples: ["8:26", "14:50", "23:59"],
+            invalidSamples: ["24:00", "8.26", "14:5"],
+          },
+        ],
+        expectedColumns: RETAIL_EXPORT_COLUMNS,
+      },
+      { id: "retail-line-total", title: "Calculate every Line Total", kind: "calculatedColumn", target: "Line Total", expectedType: "Number", formula: "[Quantity] * [Price]", tolerance: 0.01 },
     ],
     rules: [
-      { id: "retail-row-count", title: "Finish with the expected transaction count", kind: "rowCount", minimum: 535188, maximum: 535188 },
-      { id: "retail-cancellations", title: "Keep the cancelled transactions", kind: "minimumMatches", column: "Invoice", operator: "startsWith", value: "C", minimum: 9251 },
+      { id: "retail-row-count", title: "Finish with the expected transaction count", kind: "rowCount", minimum: 98777, maximum: 98777 },
+      { id: "retail-cancellations", title: "Keep the cancelled transactions", kind: "minimumMatches", column: "Invoice", operator: "startsWith", value: "C", minimum: 1855 },
       { id: "retail-adjustments", title: "Keep the bad debt adjustments", kind: "minimumMatches", column: "Description", operator: "equals", value: "Adjust bad debt", minimum: 3 },
     ],
     credit: {
@@ -195,7 +556,7 @@ export const CHALLENGES = [
       license: "Creative Commons Attribution 4.0 International",
       licenseUrl: "https://creativecommons.org/licenses/by/4.0/",
       doiUrl: "https://doi.org/10.24432/C5CG6D",
-      changes: "Converted from Excel to CSV and limited to the 2010 to 2011 sheet",
+      changes: "Converted from Excel to CSV, sampled to 100,000 rows, and given controlled spacing, casing, and recoverable Country gaps for this challenge",
     },
   },
 ];
@@ -216,7 +577,7 @@ function createCafeRows() {
     const delivered = 4 + (index * 3) % 17;
     const sold = 8 + (index * 5) % 22;
     const wasted = index % 4;
-    return {
+    const row = {
       "Stock Check ID": `CAFE-${String(index + 1).padStart(3, "0")}`,
       "Stock Date": `2026-07-${String(index % 20 + 1).padStart(2, "0")}`,
       Item: items[index % items.length],
@@ -226,6 +587,12 @@ function createCafeRows() {
       Wasted: String(wasted),
       "Kid Notes": kidReviews[index % kidReviews.length],
     };
+    if (index === 4) row["Stock Check ID"] = "CAFE_005";
+    if (index === 17) row["Stock Check ID"] = "17";
+    if (index === 6) row["Stock Date"] = "07/07/2026";
+    if (index === 21) row["Stock Date"] = "";
+    if (index % 11 === 3) row.Item = ` ${row.Item.toUpperCase()} `;
+    return row;
   });
 }
 
@@ -247,6 +614,8 @@ function createSignupRows() {
     if (index % 23 === 7) row.Phone = "12-3";
     if (index % 10 === 4) row.Status = ` ${row.Status.toLowerCase()} `;
     if (index % 29 === 8) row.Phone = "N/A";
+    if (index % 31 === 6) row["Lead ID"] = row["Lead ID"].replace("-", "_");
+    if (index % 22 === 9) row.Source = ` ${row.Source.toLowerCase()} `;
     return row;
   });
 }
@@ -264,6 +633,9 @@ function createWarehouseRows() {
   base.forEach((row, index) => {
     if (index % 14 === 2) row.Product = `  ${row.Product.toUpperCase()}  `;
     if (index % 17 === 3) row.Zone = row.Zone.toLowerCase();
+    if (index % 41 === 5) row["Order ID"] = row["Order ID"].replace("-", "_");
+    if (index % 47 === 8) row.Bins = "many";
+    if (index % 53 === 12) row.Quantity = "";
   });
   return [...base, ...base.filter((_, index) => index % 7 === 0).map((row) => ({ ...row }))];
 }
@@ -278,7 +650,7 @@ function createSupportRows() {
     if (index % 29 === 3) priority = priority.toLowerCase();
     else if (index % 31 === 7) priority = priority.toUpperCase();
     else if (index % 37 === 11) priority = ` ${priority} `;
-    return {
+    const row = {
       "Ticket ID": `T-${20000 + index}`,
       Priority: priority,
       Agent: agents[(index * 3) % agents.length],
@@ -286,6 +658,11 @@ function createSupportRows() {
       "Resolution Minutes": index % 13 === 4 ? "" : String(baseMinutes + index % 15 - 7),
       Channel: ["Email", "Chat", "Phone"][index % 3],
     };
+    if (index % 101 === 6) row["Ticket ID"] = row["Ticket ID"].replace("-", "_");
+    if (index % 83 === 9) row["Opened At"] = row["Opened At"].replace(" ", "T");
+    if (index % 71 === 13) row.Agent = ` ${row.Agent.toLowerCase()} `;
+    if (index % 67 === 17) row.Channel = row.Channel.toUpperCase();
+    return row;
   });
 }
 
@@ -328,6 +705,7 @@ function createHellRows() {
     if (index % 109 === 15) row["Discount Percent"] = "";
     if (index % 137 === 17) row["Shipping Fee"] = "N/A";
     if (index % 149 === 19) row["Tax Percent"] = "tax";
+    if (index % 163 === 23) row.Paid = "maybe";
     return row;
   });
   for (let index = 499; index < rows.length; index += 997) rows[index]["Row Key"] = rows[index - 1]["Row Key"];

@@ -1,4 +1,5 @@
 import { evaluateFormula, parseFormula, parseFormulaNumber } from "./formulaEngine.js";
+import { cleanTextValue } from "./cleaningOperations.js";
 
 export function evaluateChallenge(challenge, context) {
   if (!challenge) return emptyEvaluation();
@@ -58,6 +59,15 @@ export function evaluateObjective(objective, context) {
     };
   }
 
+  if (objective.kind === "validationContract") {
+    result = evaluateValidationContract(objective, {
+      columns,
+      rules,
+      scanIssues: context.scanIssues ?? [],
+      lastScannedAt: context.lastScannedAt,
+    });
+  }
+
   if (objective.kind === "calculatedColumn") {
     result = evaluateCalculatedColumn(objective, { rows, rules, columns });
   }
@@ -73,10 +83,42 @@ export function evaluateObjective(objective, context) {
     result = { complete: missing === 0 && removedRows === 0, detail };
   }
 
+  if (objective.kind === "textNormalized") {
+    result = evaluateTextNormalized(objective, rows);
+  }
+
   if (objective.kind === "allowedValues") {
     const allowed = new Set(objective.values);
-    const invalid = rows.filter((row) => !allowed.has(String(row[objective.column] ?? ""))).length;
-    result = { complete: invalid === 0, detail: invalid ? `${invalid.toLocaleString()} values still disagree` : "Values are consistent" };
+    const invalid = rows.filter((row) => {
+      const value = String(row[objective.column] ?? "").trim();
+      return !(objective.allowBlank && !value) && !allowed.has(value);
+    }).length;
+    const typeReady = !objective.expectedType || rules[objective.column]?.type === objective.expectedType;
+    const configuredValues = new Set((rules[objective.column]?.allowedValues ?? []).map((value) => String(value).trim()));
+    const configuredReady = !objective.requireConfiguredValues || (
+      rules[objective.column]?.mode === "friendly"
+      && rules[objective.column]?.friendlyKind === "allowedValues"
+      && configuredValues.size === allowed.size
+      && [...allowed].every((value) => configuredValues.has(value))
+    );
+    result = {
+      complete: invalid === 0 && typeReady && configuredReady,
+      detail: !typeReady
+        ? `Set ${objective.column} to ${objective.expectedType}`
+        : !configuredReady
+          ? `Configure the ${objective.values.length.toLocaleString()} allowed values`
+        : invalid
+          ? `${invalid.toLocaleString()} values still disagree`
+          : "Values are consistent",
+    };
+  }
+
+  if (objective.kind === "patternMatch") {
+    result = evaluatePatternMatch(objective, { rows, rules, columns });
+  }
+
+  if (objective.kind === "transformedColumns") {
+    result = evaluateTransformedColumns(objective, { rows, columns });
   }
 
   if (objective.kind === "unique") {
@@ -160,7 +202,82 @@ export function evaluateObjective(objective, context) {
     result = evaluateGroupMedianFill(objective, context);
   }
 
+  if (objective.kind === "groupConsistencyRecovery") {
+    result = evaluateGroupConsistencyRecovery(objective, rows);
+  }
+
+  if (objective.kind === "exportSchema") {
+    result = evaluateExportSchema(objective, {
+      rows,
+      columns,
+      rules,
+      scanIssues: context.scanIssues ?? [],
+      lastScannedAt: context.lastScannedAt,
+    });
+  }
+
   return { ...objective, ...result };
+}
+
+function evaluateValidationContract(objective, context) {
+  const checks = objective.checks ?? [];
+  const issueColumns = new Set((context.scanIssues ?? []).map((issue) => issue.column));
+  let ready = 0;
+  let firstProblem = "";
+
+  for (const check of checks) {
+    const rule = context.rules[check.column] ?? {};
+    let problem = "";
+    if (!context.columns.includes(check.column)) problem = `Keep ${check.column}`;
+    else if (check.type && rule.type !== check.type) problem = `Set ${check.column} to ${check.type}`;
+    else if (check.mode && rule.mode !== check.mode) problem = `Configure ${check.column} with ${getModeLabel(check.mode)}`;
+    else if (check.presetId && rule.presetId !== check.presetId) problem = `Choose the required ${check.column} format`;
+    else if (check.matchMode && (rule.matchMode ?? "full") !== check.matchMode) problem = `Use full matching for ${check.column}`;
+    else if (check.missingPolicy && rule.missingPolicy !== check.missingPolicy) problem = `Allow missing values in ${check.column}`;
+    else if (check.mode === "customRegex" && !regexContractMatches(rule.customPattern, check)) problem = `${check.column} Regex is too loose or too strict`;
+    else if (objective.requireScan !== false && !context.lastScannedAt) problem = "Run a scan";
+    else if (objective.requireScan !== false && issueColumns.has(check.column)) problem = `${check.column} still has scanned issues`;
+
+    if (problem) {
+      if (!firstProblem) firstProblem = problem;
+    } else {
+      ready += 1;
+    }
+  }
+
+  return {
+    complete: checks.length > 0 && ready === checks.length,
+    detail: ready === checks.length ? `${ready}/${checks.length} validation rules ready` : `${ready}/${checks.length} ready, ${firstProblem}`,
+  };
+}
+
+function regexContractMatches(pattern, check) {
+  let regex;
+  try {
+    regex = new RegExp(`^(?:${String(pattern ?? "").trim()})$`);
+  } catch {
+    return false;
+  }
+  return (check.validSamples ?? []).every((value) => regex.test(String(value)))
+    && (check.invalidSamples ?? []).every((value) => !regex.test(String(value)));
+}
+
+function getModeLabel(mode) {
+  if (mode === "customRegex") return "Custom Regex";
+  if (mode === "friendly") return "Allowed Values";
+  return mode;
+}
+
+function evaluateTextNormalized(objective, rows) {
+  let remaining = 0;
+  for (const row of rows) {
+    const value = String(row[objective.column] ?? "");
+    if (value !== cleanTextValue(value, objective)) remaining += 1;
+  }
+  return {
+    complete: rows.length > 0 && remaining === 0,
+    detail: remaining ? `${remaining.toLocaleString()} ${objective.column} values still need cleanup` : `${objective.column} is consistent`,
+  };
 }
 
 function evaluateCalculatedColumn(objective, context) {
@@ -202,6 +319,135 @@ function evaluateCalculatedColumn(objective, context) {
   };
 }
 
+function evaluatePatternMatch(objective, context) {
+  if (!context.columns.includes(objective.column)) {
+    return { complete: false, detail: `Keep ${objective.column}` };
+  }
+  if (objective.expectedType && context.rules[objective.column]?.type !== objective.expectedType) {
+    return { complete: false, detail: `Set ${objective.column} to ${objective.expectedType}` };
+  }
+  let pattern;
+  try {
+    pattern = new RegExp(objective.pattern, objective.flags ?? "");
+  } catch {
+    return { complete: false, detail: "Challenge Regex is invalid" };
+  }
+  let invalid = 0;
+  let blank = 0;
+  for (const row of context.rows) {
+    const value = String(row[objective.column] ?? "");
+    if (!value.trim() && objective.allowBlank) {
+      blank += 1;
+      continue;
+    }
+    pattern.lastIndex = 0;
+    if (!pattern.test(value)) invalid += 1;
+  }
+  const missingNeedsPermission = blank > 0
+    && objective.requireAllowedMissingWhenBlank
+    && context.rules[objective.column]?.missingPolicy !== "allowed";
+  return {
+    complete: context.rows.length > 0 && invalid === 0 && !missingNeedsPermission,
+    detail: invalid
+      ? `${invalid.toLocaleString()} values do not match`
+      : missingNeedsPermission
+        ? `Allow missing values in ${objective.column} or delete those rows`
+        : blank
+          ? `${blank.toLocaleString()} empty values are allowed`
+          : "Every value matches",
+  };
+}
+
+function evaluateTransformedColumns(objective, context) {
+  const required = objective.operation === "split"
+    ? [objective.source, ...(objective.outputs ?? [])]
+    : [...(objective.sources ?? []), objective.target];
+  const missing = required.filter((column) => !context.columns.includes(column));
+  if (missing.length) return { complete: false, detail: `Create or keep ${missing.join(", ")}` };
+
+  let failures = 0;
+  for (const row of context.rows) {
+    if (objective.operation === "split") {
+      const expected = splitValue(row[objective.source], objective);
+      if ((objective.outputs ?? []).some((column, index) => String(row[column] ?? "") !== expected[index])) failures += 1;
+    } else {
+      const values = (objective.sources ?? []).map((column) => String(row[column] ?? ""));
+      const parts = objective.skipEmpty === false ? values : values.filter((value) => value.trim() !== "");
+      const expected = parts.join(objective.separator ?? " ");
+      if (String(row[objective.target] ?? "") !== expected) failures += 1;
+    }
+  }
+  return {
+    complete: context.rows.length > 0 && failures === 0,
+    detail: failures ? `${failures.toLocaleString()} transformed rows disagree` : "Every transformed row matches",
+  };
+}
+
+function splitValue(value, objective) {
+  const text = String(value ?? "");
+  const separator = objective.separator === "whitespace" ? /\s+/ : objective.separator ?? /\s+/;
+  const parts = text.trim().split(separator);
+  const outputCount = objective.outputs?.length ?? 0;
+  if (parts.length > outputCount && outputCount > 0) {
+    return [...parts.slice(0, outputCount - 1), parts.slice(outputCount - 1).join(objective.joinOverflowWith ?? " ")];
+  }
+  return Array.from({ length: outputCount }, (_, index) => parts[index] ?? "");
+}
+
+function evaluateGroupConsistencyRecovery(objective, rows) {
+  const groups = new Map();
+  let missing = 0;
+  for (const row of rows) {
+    const value = String(row[objective.column] ?? "").trim();
+    if (!value) missing += 1;
+    const group = String(row[objective.groupBy] ?? "").trim();
+    if (!group || !matchesGroupSelector(group, objective.selector)) continue;
+    const values = groups.get(group) ?? new Set();
+    if (value) values.add(value);
+    groups.set(group, values);
+  }
+  const inconsistent = [...groups.values()].filter((values) => values.size > 1).length;
+  const enoughGroups = groups.size >= (objective.minimumGroups ?? 1);
+  const detail = missing
+    ? `${missing.toLocaleString()} ${objective.column} gaps remain`
+    : inconsistent
+      ? `${inconsistent.toLocaleString()} customer groups still disagree`
+      : !enoughGroups
+        ? "Too few customer groups remain"
+        : `${groups.size.toLocaleString()} customer groups are consistent`;
+  return { complete: rows.length > 0 && missing === 0 && inconsistent === 0 && enoughGroups, detail };
+}
+
+function matchesGroupSelector(value, selector = {}) {
+  if (selector.numericModulo !== undefined) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number % selector.numericModulo !== (selector.remainder ?? 0)) return false;
+  }
+  return true;
+}
+
+function evaluateExportSchema(objective, context) {
+  const splitReady = evaluateTransformedColumns(objective.split, context).complete;
+  const combineReady = evaluateTransformedColumns(objective.combine, context).complete;
+  const rulesReady = evaluateValidationContract({
+    checks: objective.checks,
+    requireScan: objective.requireScan,
+  }, context).complete;
+  const expectedColumns = objective.expectedColumns ?? [];
+  const orderReady = expectedColumns.length === context.columns.length
+    && expectedColumns.every((column, index) => context.columns[index] === column);
+  const ready = [splitReady, combineReady, rulesReady, orderReady].filter(Boolean).length;
+  let problem = "";
+  if (!splitReady) problem = "split InvoiceDate into the required columns";
+  else if (!combineReady) problem = "build Product Label with the required separator";
+  else if (!rulesReady) problem = "configure the derived column formats and scan";
+  else if (!orderReady) problem = "move the columns into the final export order";
+  return {
+    complete: ready === 4,
+    detail: ready === 4 ? "Export columns and order are ready" : `${ready}/4 export steps ready, ${problem}`,
+  };
+}
+
 export function evaluateRule(rule, context) {
   const rows = context.rows ?? [];
   let result = { complete: false, detail: "Not checked yet" };
@@ -227,7 +473,61 @@ export function evaluateRule(rule, context) {
     };
   }
 
+  if (rule.kind === "guidedRowCleanup") {
+    result = evaluateGuidedRowCleanup(rule, context.history ?? []);
+  }
+
   return { ...rule, ...result };
+}
+
+function evaluateGuidedRowCleanup(rule, history) {
+  const deletedRows = collectDeletedRows(history);
+  const optionalValues = new Set((rule.optionalInvalidValues ?? []).map((value) => String(value).trim().toLocaleLowerCase()));
+  let requiredDeleted = 0;
+  let optionalDeleted = 0;
+  let unrelatedDeleted = 0;
+
+  for (const row of deletedRows) {
+    const validRequiredValues = (rule.requiredColumns ?? [])
+      .filter((column) => toNumber(row[column]) !== null)
+      .length;
+    const required = validRequiredValues < (rule.minimumValidRequiredValues ?? 1);
+    const optionalValue = String(row[rule.optionalColumn] ?? "").trim().toLocaleLowerCase();
+    const optional = optionalValues.has(optionalValue);
+    if (required) requiredDeleted += 1;
+    if (optional && !required) optionalDeleted += 1;
+    if (!required && !optional) unrelatedDeleted += 1;
+  }
+
+  const requiredCount = rule.requiredDeletions ?? 0;
+  const complete = requiredDeleted >= requiredCount && unrelatedDeleted === 0;
+  const detail = unrelatedDeleted
+    ? `${unrelatedDeleted.toLocaleString()} unrelated row${unrelatedDeleted === 1 ? "" : "s"} were deleted`
+    : requiredDeleted < requiredCount
+      ? `${requiredDeleted.toLocaleString()} / ${requiredCount.toLocaleString()} unrecoverable number rows removed`
+      : optionalDeleted
+        ? `${requiredDeleted.toLocaleString()} number rows and ${optionalDeleted.toLocaleString()} empty date rows removed`
+        : `${requiredDeleted.toLocaleString()} unrecoverable number rows removed`;
+  return { complete, detail };
+}
+
+function collectDeletedRows(history) {
+  const deletedById = new Map();
+  const visit = (action) => {
+    if (action?.kind === "compound") {
+      (action.actions ?? []).forEach(visit);
+      return;
+    }
+    if (action?.kind !== "deleteRows") return;
+    for (const item of action.rows ?? []) {
+      const row = item?.row ?? item;
+      if (!row) continue;
+      const id = row.__rowId ?? `deleted-${deletedById.size}`;
+      deletedById.set(id, row);
+    }
+  };
+  history.forEach(visit);
+  return [...deletedById.values()];
 }
 
 function emptyEvaluation() {
@@ -241,11 +541,11 @@ function evaluateGroupMedianFill(objective, context) {
   const valuesByGroup = new Map();
   const targetRows = [];
 
-  for (const row of sourceRows) {
+  for (const [index, row] of sourceRows.entries()) {
     const group = canonicalGroup(row[objective.groupBy], objective.groups);
     if (!group) continue;
     if (isBlank(row[objective.column])) {
-      targetRows.push({ id: String(row[objective.idColumn] ?? ""), group });
+      targetRows.push({ id: String(row[objective.idColumn] ?? ""), group, index });
       continue;
     }
     const value = toNumber(row[objective.column]);
@@ -258,7 +558,8 @@ function evaluateGroupMedianFill(objective, context) {
   const medians = new Map([...valuesByGroup.entries()].map(([group, values]) => [group, median(values)]));
   let failures = 0;
   for (const target of targetRows) {
-    const row = currentById.get(target.id);
+    // The player may repair the ID column before filling the median values.
+    const row = currentById.get(target.id) ?? currentRows[target.index];
     const actual = toNumber(row?.[objective.column]);
     const expected = medians.get(target.group);
     if (actual === null || !Number.isFinite(expected) || Math.abs(actual - expected) > (objective.tolerance ?? 0.01)) failures += 1;

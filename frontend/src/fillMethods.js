@@ -1,7 +1,8 @@
 export const ALL_ISSUE_COLUMNS = "__all_issue_columns__";
 
 export const FILL_METHODS = [
-  { id: "custom", label: "Custom value", description: "Replace every target with text you enter." },
+  { id: "custom", label: "Custom value", description: "Replace every target with anything you enter.", usesCustomValue: true },
+  { id: "customDate", label: "Custom date", description: "Pick one date and use it for every target.", types: ["Date"], usesCustomValue: true },
   { id: "mode", label: "Most common value", description: "Use the most common valid value, optionally within groups.", types: ["Text", "Category", "Boolean"], supportsGrouping: true },
   { id: "median", label: "Median", description: "Use the middle valid number, optionally within groups.", types: ["Number", "Integer"], supportsGrouping: true },
   { id: "average", label: "Average", description: "Use the average valid number, optionally within groups.", types: ["Number", "Integer"], supportsGrouping: true },
@@ -39,6 +40,9 @@ export function calculateColumnFill(rows, options, collectChanges = false) {
     if (isTarget(stateAt(index), scope)) targetCount += 1;
   }
   if (!targetCount) return emptyResult("No cells match the selected target.");
+  if (method === "customDate" && !String(customValue).trim()) {
+    return emptyResult("Choose a date.", targetCount);
+  }
 
   const result = createResult(targetCount, collectChanges);
   if (methodDefinition.requiresOrder) {
@@ -59,7 +63,7 @@ export function calculateColumnFill(rows, options, collectChanges = false) {
 
   const validValues = [];
   const validValuesByGroup = new Map();
-  if (method !== "custom") {
+  if (!methodDefinition.usesCustomValue) {
     for (let index = 0; index < rows.length; index += 1) {
       const state = stateAt(index);
       if (!state.valid) continue;
@@ -69,7 +73,7 @@ export function calculateColumnFill(rows, options, collectChanges = false) {
       validValuesByGroup.get(key).push(state.value);
     }
   }
-  if (method !== "custom" && !validValues.length) {
+  if (!methodDefinition.usesCustomValue && !validValues.length) {
     return emptyResult("This column needs at least one valid source value.", targetCount);
   }
 
