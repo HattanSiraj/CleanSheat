@@ -90,11 +90,13 @@ export function CampaignMap({
   }, []);
 
   useEffect(() => {
+    if (["booting", "ejecting"].includes(bootPhase)) return;
     if (sessionDiskEjected) setBootPhase("waiting");
     else if (bootComplete) setBootPhase("online");
     else if (bootSaved) setBootPhase("incomplete");
     else if (!sessionDiskInserted) setBootPhase("waiting");
-  }, [bootComplete, bootSaved, sessionDiskEjected, sessionDiskInserted]);
+    else setBootPhase("ready");
+  }, [bootComplete, bootPhase, bootSaved, sessionDiskEjected, sessionDiskInserted]);
 
   useEffect(() => {
     if (selectionTouchedRef.current) return;
@@ -249,8 +251,6 @@ export function CampaignMap({
         return;
       }
       setBootPhase(bootSaved ? "incomplete" : "ready");
-      if (bootSaved) onContinue(tutorial.id);
-      else onStart(tutorial.id);
     }, bootDelay));
   }
 
@@ -264,12 +264,12 @@ export function CampaignMap({
     setNoPowerChallengeId("");
     setIsFreeCleanSelected(false);
     setPoweredCount(0);
+    setSessionDiskInserted(false);
+    setSessionDiskEjected(true);
     setBootPhase("ejecting");
     onSoundRef.current?.("floppyEject");
     const ejectDelay = reducedMotion ? 80 : EJECT_ANIMATION_MS;
     bootTimersRef.current.push(window.setTimeout(() => {
-      setSessionDiskInserted(false);
-      setSessionDiskEjected(true);
       setBootPhase("waiting");
     }, ejectDelay));
   }

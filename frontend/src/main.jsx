@@ -592,10 +592,6 @@ function App() {
   }, [history]);
 
   useEffect(() => {
-    if (hasUnscannedChanges) setShowIssueRowsOnly(false);
-  }, [hasUnscannedChanges]);
-
-  useEffect(() => {
     if (!isCleaningToolsOpen) setRecipePreview(null);
   }, [isCleaningToolsOpen]);
 
@@ -803,7 +799,7 @@ function App() {
     [validationIssues],
   );
   const gridRows = useMemo(
-    () => showIssueRowsOnly && validationIssueRowIds.size
+    () => showIssueRowsOnly
       ? visibleRows.filter((row) => validationIssueRowIds.has(row.__rowId))
       : visibleRows,
     [showIssueRowsOnly, validationIssueRowIds, visibleRows],
@@ -2647,7 +2643,6 @@ function App() {
     setLastScannedAt(scannedAt);
     setHasUnscannedChanges(false);
     setIsValidationPanelOpen(false);
-    if (!nextIssues.length) setShowIssueRowsOnly(false);
     if (activeChallenge) {
       setRunStats(nextRunStats);
       setChallengeEvaluation(nextEvaluation);
@@ -3632,7 +3627,7 @@ function App() {
                   </li>
                   <li>
                     <span>5</span>
-                    <div><strong>Scan and fix</strong><p>Click <HintCode hint="Checks every visible cell against its column type again after your edits.">Scan Again</HintCode> to catch values such as ERROR or unknown in <span className="column-reference">Total Spent</span>, open <HintCode hint="Shows every empty or invalid cell found during the latest scan">Validation Issues</HintCode> to review them, then choose <HintCode hint="Opens automatic filling methods for the detected empty or invalid cells">Fill invalid values</HintCode> and use whichever filling method fits your data</p></div>
+                    <div><strong>Remove rows the formulas cannot fix</strong><p>Some rows are missing values in two or more related columns, so the formulas do not have enough information to calculate them. After fixing the other problems and scanning again, open <HintCode hint="Shows every empty or invalid cell found during the latest scan">Validation Issues</HintCode> and choose <HintCode hint="Removes every row containing at least one issue from the latest scan">Delete rows with issues</HintCode> to remove the remaining incomplete rows (use this option only when no valid fix can be applied)</p></div>
                   </li>
                   <li>
                     <span>6</span>
@@ -3640,7 +3635,7 @@ function App() {
                   </li>
                   <li>
                     <span>7</span>
-                    <div><strong>Remove rows the formulas cannot fix</strong><p>Some rows are missing values in two or more related columns, so the formulas do not have enough information to calculate them. After fixing the other problems and scanning again, open <HintCode hint="Shows every empty or invalid cell found during the latest scan">Validation Issues</HintCode> and choose <HintCode hint="Removes every row containing at least one issue from the latest scan">Delete rows with issues</HintCode> to remove the remaining incomplete rows (use this option only when no valid fix can be applied)</p></div>
+                    <div><strong>Fill invalid Location values</strong><p>Show <span className="column-reference">Location</span>, click its column name and set <code>Column Type</code> to <code>Category</code>. Open <code>Configure</code>, choose <code>Allowed Values</code>, then select <span className="column-reference">In-store</span> and <span className="column-reference">Takeaway</span> as the correct choices and save the rule. Click <HintCode hint="Checks every visible cell against its column type again after your edits.">Scan Again</HintCode>, open <HintCode hint="Opens automatic filling methods for the detected empty or invalid cells">Fill invalid values</HintCode>, then choose <code>Most common value</code> or enter one of the allowed values to replace the Location problems</p></div>
                   </li>
                   <li>
                     <span>8</span>
@@ -3873,7 +3868,7 @@ function App() {
                     <small>Detected as {selectedDetectedType}</small>
                   </div>
                   <label className="column-type-control">
-                    <span>Type</span>
+                    <span>Column Type</span>
                     <select
                       value={selectedRule?.type ?? "Text"}
                       onChange={(event) => handleExpectedTypeChange(selectedColumn, event.target.value)}
@@ -3975,7 +3970,12 @@ function App() {
                   <button type="button" onClick={scanForIssues} disabled={!canScan || isScanning}>
                     {isScanning ? "Scanning..." : lastScannedAt ? "Scan Again" : "Scan"}
                   </button>
-                  <button type="button" className={`secondary-button ${showIssueRowsOnly ? "active-view-button" : ""}`} onClick={() => setShowIssueRowsOnly((current) => !current)} disabled={!validationIssues.length || hasUnscannedChanges}>
+                  <button
+                    type="button"
+                    className={`secondary-button ${showIssueRowsOnly ? "active-view-button" : ""}`}
+                    onClick={() => setShowIssueRowsOnly((current) => !current)}
+                    disabled={!showIssueRowsOnly && (!validationIssues.length || hasUnscannedChanges)}
+                  >
                     {showIssueRowsOnly ? "Show All Rows" : "Display invalid rows"}
                   </button>
                   <button type="button" className="secondary-button" onClick={() => openFillDialog(selectedColumn)} disabled={!validationIssues.length || hasUnscannedChanges}>
