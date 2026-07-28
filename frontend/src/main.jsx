@@ -21,6 +21,7 @@ import {
   mergeVisibleColumnOrder,
   validateSchemaOperation,
 } from "./cleaningOperations.js";
+import { DATE_PRESET_IDS, buildDateConversionChanges, isDate, isRealDate } from "./dateConversion.js";
 import {
   RECIPE_STORAGE_KEY,
   createRecipe,
@@ -79,7 +80,7 @@ const VALIDATION_PRESETS = [
   { id: "number-positive", type: "Number", name: "Positive number" },
   { id: "integer-standard", type: "Integer", name: "Standard integer" },
   { id: "integer-positive", type: "Integer", name: "Positive integer" },
-  { id: "date-iso-dash", type: "Date", name: "YYYY-MM-DD (tutorial format)" },
+  { id: "date-iso-dash", type: "Date", name: "YYYY-MM-DD" },
   { id: "date-iso-slash", type: "Date", name: "YYYY/MM/DD" },
   { id: "date-us", type: "Date", name: "MM/DD/YYYY" },
   { id: "date-eu", type: "Date", name: "DD/MM/YYYY" },
@@ -91,6 +92,7 @@ const VALIDATION_PRESETS = [
   { id: "boolean-common", type: "Boolean", name: "true/false/yes/no" },
   { id: "category-existing", type: "Category", name: "Existing values only" },
 ];
+const DATE_VALIDATION_PRESETS = VALIDATION_PRESETS.filter((preset) => preset.type === "Date");
 const DEFAULT_PRESET_BY_TYPE = {
   Text: "text-any",
   Number: "number-standard",
@@ -248,7 +250,8 @@ function App() {
   const [showRowNumbers, setShowRowNumbers] = useState(true);
   const [selectedColumn, setSelectedColumn] = useState("");
   const [isValidationPanelOpen, setIsValidationPanelOpen] = useState(false);
-  const [numericConversionNotice, setNumericConversionNotice] = useState("");
+  const [columnConversionNotice, setColumnConversionNotice] = useState("");
+  const [dateConversionSourcePresetId, setDateConversionSourcePresetId] = useState("date-eu");
   const [pendingConfirmation, setPendingConfirmation] = useState(null);
   const [isRuleBuilderOpen, setIsRuleBuilderOpen] = useState(false);
   const [ruleDraft, setRuleDraft] = useState(null);
@@ -654,6 +657,11 @@ function App() {
   }, [columns, rows]);
 
   const selectedRule = selectedColumn ? resolveColumnRule(columnRules[selectedColumn] ?? createColumnRule("Text"), regexRuleLibrary) : null;
+  const selectedDateTargetPreset = selectedRule?.type === "Date"
+    && selectedRule.mode === "preset"
+    && DATE_PRESET_IDS.includes(selectedRule.presetId)
+    ? getPreset(selectedRule.presetId)
+    : null;
   const selectedDetectedType = useMemo(
     () => selectedColumn ? inferColumnType(rows, selectedColumn) : "",
     [rows, selectedColumn],
@@ -1186,7 +1194,7 @@ function App() {
     setHasUnscannedChanges(false);
     setSelectedColumn("");
     setIsValidationPanelOpen(false);
-    setNumericConversionNotice("");
+    setColumnConversionNotice("");
     setColumnRegexSummary(null);
     setRelationshipIssues([]);
     setSelectedRelationshipFixes([]);
@@ -1863,6 +1871,22 @@ function App() {
         continue;
       }
 
+      if (step.type === "dateConversion") {
+        const plan = buildDateConversionChanges(
+          workingRows,
+          step.column,
+          step.sourcePresetId,
+          step.targetPresetId,
+        );
+        if (!plan.valid) return { valid: false, error: `Date conversion: ${plan.error}` };
+        if (plan.changes.length) {
+          workingRows = applyCellChanges(workingRows, plan.changes, "redo");
+          actions.push({ kind: "cells", changes: plan.changes });
+        }
+        summary.push({ label: "Date conversion", count: plan.changeCount, unit: "cells" });
+        continue;
+      }
+
       if (step.type === "relationshipFix") {
         const fixes = [];
         for (const relationshipId of step.relationshipIds ?? []) {
@@ -2053,7 +2077,7 @@ function App() {
     setEditingSavedRegexId("");
     setRegexTestValue("");
     setColumnRegexSummary(null);
-    setNumericConversionNotice("");
+    setColumnConversionNotice("");
     const nextRule = resolveColumnRule(columnRules[nextColumn] ?? createColumnRule("Text"), regexRuleLibrary);
     setRegexBuilder(nextRule.builder ?? DEFAULT_REGEX_BUILDER);
   }
@@ -2069,7 +2093,7 @@ function App() {
     });
     setColumnRules(nextRules);
     setEditingSavedRegexId("");
-    setNumericConversionNotice("");
+    setColumnConversionNotice("");
     setHasUnscannedChanges(true);
   }
 
@@ -2819,7 +2843,60 @@ function App() {
     setRelationshipIssues([]);
     setSelectedRelationshipFixes([]);
     setLastScannedAt(new Date());
-    setNumericConversionNotice(`${convertedCount.toLocaleString()} values converted${skippedCount ? `; ${skippedCount.toLocaleString()} invalid values skipped` : ""}.`);
+    setColumnConversionNotice(`${convertedCount.toLocaleString()} values converted${skippedCount ? `; ${skippedCount.toLocaleString()} invalid values skipped` : ""}.`);
+    setColumnRegexSummary(null);
+    setHasUnscannedChanges(false);
+  }
+
+  function convertSelectedDateColumn() {
+    if (!selectedColumn || !selectedDateTargetPreset) return;
+    const sourcePreset = getPreset(dateConversionSourcePresetId);
+    requestConfirmation({
+      title: `Change ${selectedColumn} date format?`,
+      message: `Change dates in "${selectedColumn}" from ${sourcePreset.name} to ${selectedDateTargetPreset.name}? Dates already using ${selectedDateTargetPreset.name} stay untouched and empty or invalid values will be skipped.`,
+      confirmLabel: "Change date format",
+      tone: "default",
+      onConfirm: performDateColumnConversion,
+    });
+  }
+
+  function performDateColumnConversion() {
+    if (!selectedColumn || !selectedDateTargetPreset) return;
+    const plan = buildDateConversionChanges(
+      rows,
+      selectedColumn,
+      dateConversionSourcePresetId,
+      selectedDateTargetPreset.id,
+    );
+    if (!plan.valid) {
+      setColumnConversionNotice(plan.error);
+      return;
+    }
+
+    const nextRows = applyCellChanges(rows, plan.changes, "redo");
+    const nextVisibleRows = nextRows.map((row) => pickColumns(row, visibleColumns));
+    if (plan.changes.length) {
+      setRows(nextRows);
+      pushHistory({
+        label: `Change ${selectedColumn} date format`,
+        kind: "cells",
+        changes: plan.changes,
+        recipeStep: {
+          type: "dateConversion",
+          column: selectedColumn,
+          sourcePresetId: dateConversionSourcePresetId,
+          targetPresetId: selectedDateTargetPreset.id,
+        },
+      });
+    }
+    setValidationIssues(validateRows(nextVisibleRows, visibleColumnRules));
+    setRelationshipIssues([]);
+    setSelectedRelationshipFixes([]);
+    setLastScannedAt(new Date());
+    setColumnConversionNotice(
+      `${plan.changeCount.toLocaleString()} date${plan.changeCount === 1 ? "" : "s"} changed`
+      + `${plan.skippedCount ? ` and ${plan.skippedCount.toLocaleString()} invalid value${plan.skippedCount === 1 ? "" : "s"} skipped` : ""}`,
+    );
     setColumnRegexSummary(null);
     setHasUnscannedChanges(false);
   }
@@ -3838,6 +3915,30 @@ function App() {
                       </details>
                     </div>
                   )}
+                  {selectedDateTargetPreset && (
+                    <div className="column-control-actions">
+                      <details className="column-convert-menu" key={selectedColumn}>
+                        <summary>Change date format</summary>
+                        <div className="date-convert-menu-content">
+                          <label>
+                            <span>Current format</span>
+                            <select
+                              value={dateConversionSourcePresetId}
+                              onChange={(event) => setDateConversionSourcePresetId(event.target.value)}
+                            >
+                              {DATE_VALIDATION_PRESETS.map((preset) => (
+                                <option key={preset.id} value={preset.id}>{preset.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <small>Change to {selectedDateTargetPreset.name}</small>
+                          <button type="button" className="secondary-button" onClick={convertSelectedDateColumn}>
+                            Change dates
+                          </button>
+                        </div>
+                      </details>
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="column-control-empty">
@@ -3847,8 +3948,8 @@ function App() {
               )}
             </div>
 
-            {numericConversionNotice && (
-              <div className="column-action-notice" role="status">{numericConversionNotice}</div>
+            {columnConversionNotice && (
+              <div className="column-action-notice" role="status">{columnConversionNotice}</div>
             )}
 
             <div className="dataset-control-row">
@@ -4673,7 +4774,7 @@ function mergeRelationshipRules(currentRules, recipeRules) {
 
 function getRecipeStepColumns(step) {
   if (["findReplace", "fill", "textCleanup", "deduplicate", "deleteInvalidRows"].includes(step.type)) return step.columns ?? [];
-  if (step.type === "numericConversion") return [step.column].filter(Boolean);
+  if (["numericConversion", "dateConversion"].includes(step.type)) return [step.column].filter(Boolean);
   if (step.type === "createColumn") return [];
   if (step.type === "deleteColumns") return step.columns ?? [];
   if (step.type === "splitColumn") return [step.sourceColumn].filter(Boolean);
@@ -4688,6 +4789,7 @@ function describeRecipeStep(step) {
   if (step.type === "splitColumn") return `${step.sourceColumn} into ${step.outputColumns.join(", ")}`;
   if (step.type === "combineColumns") return `${step.sourceColumns.join(", ")} into ${step.outputColumn}`;
   if (step.type === "numericConversion") return `${step.column} to ${step.targetType}`;
+  if (step.type === "dateConversion") return `${step.column} to ${getPreset(step.targetPresetId).name}`;
   if (step.type === "relationshipFix") return `${step.relationshipIds?.length ?? 0} relationship rule${step.relationshipIds?.length === 1 ? "" : "s"}`;
   return columns.length ? columns.join(", ") : "Uses the saved column rules";
 }
@@ -5183,27 +5285,6 @@ function isInteger(value, presetId = "integer-standard") {
   if (!INTEGER_PATTERN.test(text)) return false;
   if (presetId === "integer-positive") return Number(text.replaceAll(",", "")) >= 0;
   return true;
-}
-
-function isDate(value, presetId = "date-iso-dash") {
-  const text = String(value).trim();
-  if (presetId === "date-iso-dash") return validateDateParts(text, /^(\d{4})-(\d{2})-(\d{2})$/, [1, 2, 3]);
-  if (presetId === "date-iso-slash") return validateDateParts(text, /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/, [1, 2, 3]);
-  if (presetId === "date-us") return validateDateParts(text, /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, [3, 1, 2]);
-  if (presetId === "date-eu") return validateDateParts(text, /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, [3, 2, 1]);
-  return false;
-}
-
-function validateDateParts(text, pattern, indexes) {
-  const match = text.match(pattern);
-  if (!match) return false;
-  return isRealDate(Number(match[indexes[0]]), Number(match[indexes[1]]), Number(match[indexes[2]]));
-}
-
-function isRealDate(year, month, day) {
-  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
 function isEmail(value) {

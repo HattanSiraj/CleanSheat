@@ -110,7 +110,7 @@ export const CHALLENGES = [
   },
   {
     id: "cafe-closing-time",
-    revision: 4,
+    revision: 5,
     number: 1,
     title: "Cafe Closing Time",
     subtitle: "A kid on the loose",
@@ -155,7 +155,7 @@ export const CHALLENGES = [
     objectives: [
       { id: "cafe-id", title: "Repair the stock check IDs", kind: "patternMatch", column: "Stock Check ID", pattern: "^CAFE-[0-9]{3}$" },
       { id: "cafe-date", title: "Repair the stock dates", kind: "patternMatch", column: "Stock Date", expectedType: "Date", pattern: "^2026-07-[0-9]{2}$" },
-      { id: "cafe-items", title: "Clean the Item choices", kind: "allowedValues", column: "Item", expectedType: "Category", values: ["Coffee beans", "Oat milk", "Croissants", "Paper cups", "Chocolate syrup"] },
+      { id: "cafe-items", title: "Put the Item choices in Title Case", kind: "allowedValues", column: "Item", expectedType: "Category", values: ["Coffee Beans", "Oat Milk", "Croissants", "Paper Cups", "Chocolate Syrup"] },
       { id: "cafe-numbers", title: "Set the stock columns to Number", kind: "types", expected: { "Opening Stock": "Number", Delivered: "Number", Sold: "Number", Wasted: "Number" } },
       { id: "closing-stock", title: "Rebuild the closing stock column", kind: "calculatedColumn", target: "Closing Stock", expectedType: "Number", formula: "[Opening Stock] + [Delivered] - [Sold] - [Wasted]", tolerance: 0.01 },
       { id: "remove-notes", title: "Delete the kid reviews", kind: "columnsAbsent", columns: ["Kid Notes"] },

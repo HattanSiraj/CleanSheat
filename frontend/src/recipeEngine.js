@@ -5,6 +5,7 @@ const STEP_TYPES = new Set([
   "findReplace",
   "fill",
   "numericConversion",
+  "dateConversion",
   "relationshipFix",
   "deleteInvalidRows",
   "deduplicate",
@@ -117,7 +118,7 @@ export function getRequiredColumns(initialColumns, steps, relationships = []) {
 
 export function getStepInputs(step, relationshipById = new Map()) {
   if (["findReplace", "fill", "textCleanup", "deduplicate", "deleteInvalidRows"].includes(step.type)) return step.columns ?? [];
-  if (step.type === "numericConversion") return [step.column].filter(Boolean);
+  if (["numericConversion", "dateConversion"].includes(step.type)) return [step.column].filter(Boolean);
   if (step.type === "splitColumn") return [step.sourceColumn].filter(Boolean);
   if (step.type === "combineColumns") return step.sourceColumns ?? [];
   if (step.type === "createColumn") return [];
@@ -147,6 +148,7 @@ export function getRecipeStepLabel(step) {
     findReplace: "Find & Replace",
     fill: "Fill invalid values",
     numericConversion: "Convert numeric column",
+    dateConversion: "Change date format",
     relationshipFix: "Apply relationship fixes",
     deleteInvalidRows: "Delete rows with issues",
     deduplicate: "Remove duplicates",

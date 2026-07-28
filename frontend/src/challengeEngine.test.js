@@ -121,7 +121,7 @@ test("cafe challenge needs a calculated column and removes the kid notes", () =>
   const initialColumns = Object.keys(sourceRows[0]);
   assert.equal(evaluateChallenge(challenge, { rows: sourceRows, columns: initialColumns, columnRules: {} }).complete, false);
 
-  const items = ["Coffee beans", "Oat milk", "Croissants", "Paper cups", "Chocolate syrup"];
+  const items = ["Coffee Beans", "Oat Milk", "Croissants", "Paper Cups", "Chocolate Syrup"];
   const rows = sourceRows.map((row, index) => {
     const { "Kid Notes": ignored, ...cleanRow } = row;
     return {
