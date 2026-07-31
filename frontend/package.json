@@ -10,7 +10,7 @@
     "check:dead": "knip",
     "generate:hell": "node scripts/generate_dataset_from_hell.mjs",
     "lint": "eslint . --max-warnings 0",
-    "test": "node --test \"src/**/*.test.js\"",
+    "test": "node --test",
     "test:ui": "playwright test",
     "preview": "vite preview"
   },
