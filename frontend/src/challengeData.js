@@ -45,7 +45,7 @@ const RETAIL_EXPORT_COLUMNS = [
   "Country",
 ];
 
-export const CHALLENGES = [
+const CORE_CHALLENGES = [
   {
     id: "boot-sequence",
     revision: 2,
@@ -562,6 +562,15 @@ export const CHALLENGES = [
   },
 ];
 
+export const CHALLENGES = [
+  ...CORE_CHALLENGES.map((challenge) => ({
+    pack: challenge.tutorial ? "boot" : "core",
+    packOrder: challenge.number,
+    ...challenge,
+  })),
+  ...HELL_CHALLENGES,
+];
+
 export function getChallenge(challengeId) {
   return CHALLENGES.find((challenge) => challenge.id === challengeId) ?? null;
 }
@@ -727,3 +736,4 @@ function createRandom(seed) {
 function pick(values, random) {
   return values[Math.floor(random() * values.length)];
 }
+import { HELL_CHALLENGES } from "./hellChallengeData.js";

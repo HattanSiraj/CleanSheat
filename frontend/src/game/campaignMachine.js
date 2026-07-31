@@ -1,6 +1,6 @@
 import { isBootComplete } from "./progress.js";
 
-export const BOOT_CHALLENGE_ID = "boot-sequence";
+const BOOT_CHALLENGE_ID = "boot-sequence";
 export const BOOT_WORKSPACE_ID = `challenge:${BOOT_CHALLENGE_ID}`;
 export const FREE_CLEAN_PREVIEW = [
   "Bring any CSV into the full cleaning workspace without scores, objectives or challenge rules",
@@ -27,13 +27,11 @@ export function getBootMachineState(progress, savedWorkspaceIds = [], sessionIns
   };
 }
 
-export function getInitialMachineChallengeId(challenges, progress, savedWorkspaceIds = []) {
+export function getInitialMachineChallengeId(challenges, progress, savedWorkspaceIds = [], pack = "core") {
   const tutorial = challenges.find((challenge) => challenge.tutorial);
   if (!isBootComplete(progress)) return tutorial?.id ?? challenges[0]?.id ?? "";
 
-  const missions = challenges
-    .filter((challenge) => !challenge.tutorial)
-    .sort((left, right) => left.number - right.number);
+  const missions = getPackChallenges(challenges, pack);
   const savedIncomplete = missions.find((challenge) => (
     savedWorkspaceIds.includes(`challenge:${challenge.id}`)
     && !progress.records[challenge.id]?.complete
@@ -43,6 +41,24 @@ export function getInitialMachineChallengeId(challenges, progress, savedWorkspac
     ?? missions[0]?.id
     ?? tutorial?.id
     ?? "";
+}
+
+export function getPackChallenges(challenges, pack = "core") {
+  return challenges
+    .filter((challenge) => !challenge.tutorial && (challenge.pack ?? "core") === pack)
+    .sort((left, right) => (
+      (left.packOrder ?? left.number) - (right.packOrder ?? right.number)
+    ));
+}
+
+export function isCoreCampaignComplete(challenges, progress) {
+  const missions = getPackChallenges(challenges, "core");
+  return missions.length > 0 && missions.every((challenge) => progress.records?.[challenge.id]?.complete);
+}
+
+export function isHellCampaignComplete(challenges, progress) {
+  const missions = getPackChallenges(challenges, "hell");
+  return missions.length > 0 && missions.every((challenge) => progress.records?.[challenge.id]?.complete);
 }
 
 export function getChallengeModuleState(challenge, progress, savedWorkspaceIds, bootComplete) {

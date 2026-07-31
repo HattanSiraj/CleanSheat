@@ -1,5 +1,3 @@
-import React from "react";
-
 export function EffectsControl({ mode, onChange, compact = false }) {
   const reduced = mode === "reduced";
   return (

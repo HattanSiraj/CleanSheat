@@ -1,5 +1,5 @@
-export const MAX_HEALTH_ROW_BANDS = 20;
-export const MAX_HEALTH_COLUMN_BANDS = 40;
+const MAX_HEALTH_ROW_BANDS = 20;
+const MAX_HEALTH_COLUMN_BANDS = 40;
 
 export function buildDataHealthMap({
   rowCount = 0,
@@ -19,6 +19,7 @@ export function buildDataHealthMap({
       rowBandCount: 0,
       columnBandCount: 0,
       cells: [],
+      columns: [],
       maxIssues: 0,
     };
   }
@@ -34,11 +35,20 @@ export function buildDataHealthMap({
       columnStart: bandStart(columnBand, columnBandCount, safeColumns.length),
       columnEnd: bandEnd(columnBand, columnBandCount, safeColumns.length),
       issueCount: 0,
+      healthPercentage: 100,
+      issuePercentage: 0,
       firstIssue: null,
     };
   });
 
   const columnIndexes = new Map(safeColumns.map((column, index) => [column, index]));
+  const columnHealth = safeColumns.map((column, index) => ({
+    column,
+    columnIndex: index,
+    issueCount: 0,
+    healthPercentage: 100,
+    firstIssue: null,
+  }));
   let maxIssues = 0;
   for (const issue of issues ?? []) {
     const columnIndex = columnIndexes.get(issue.column);
@@ -49,7 +59,23 @@ export function buildDataHealthMap({
     const cell = cells[(rowBand * columnBandCount) + columnBand];
     cell.issueCount += 1;
     cell.firstIssue ??= issue;
+    columnHealth[columnIndex].issueCount += 1;
+    columnHealth[columnIndex].firstIssue ??= issue;
     maxIssues = Math.max(maxIssues, cell.issueCount);
+  }
+
+  for (const cell of cells) {
+    const rowCapacity = cell.rowEnd - cell.rowStart + 1;
+    const columnCapacity = cell.columnEnd - cell.columnStart + 1;
+    const capacity = Math.max(1, rowCapacity * columnCapacity);
+    cell.issuePercentage = Math.min(100, cell.issueCount / capacity * 100);
+    cell.healthPercentage = Math.max(0, 100 - cell.issuePercentage);
+  }
+  for (const column of columnHealth) {
+    const issuePercentage = safeRowCount
+      ? Math.min(100, column.issueCount / safeRowCount * 100)
+      : 0;
+    column.healthPercentage = Math.max(0, 100 - issuePercentage);
   }
 
   return {
@@ -58,6 +84,7 @@ export function buildDataHealthMap({
     rowBandCount,
     columnBandCount,
     cells,
+    columns: columnHealth,
     maxIssues,
   };
 }
@@ -72,7 +99,21 @@ export function getHealthCellLabel(cell, columns) {
   const issueLabel = cell.issueCount
     ? `${cell.issueCount.toLocaleString()} ${cell.issueCount === 1 ? "issue" : "issues"}`
     : "Clean";
-  return `${rowLabel}, ${columnLabel}, ${issueLabel}`;
+  return `${rowLabel}, ${columnLabel}, ${formatHealthPercentage(cell.healthPercentage)} healthy, ${issueLabel}`;
+}
+
+export function formatHealthPercentage(value) {
+  const percentage = Math.min(100, Math.max(0, Number(value) || 0));
+  if (percentage === 100 || percentage === 0) return `${percentage}%`;
+  if (percentage >= 99.99) {
+    const precise = percentage.toFixed(4);
+    return precise === "100.0000"
+      ? ">99.9999%"
+      : `${precise.replace(/0+$/, "").replace(/\.$/, "")}%`;
+  }
+  if (percentage >= 99) return `${percentage.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}%`;
+  if (percentage >= 90) return `${percentage.toFixed(1).replace(/\.0$/, "")}%`;
+  return `${Math.round(percentage)}%`;
 }
 
 function bandStart(index, bandCount, total) {

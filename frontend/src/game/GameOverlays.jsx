@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { ACHIEVEMENTS } from "./achievements.js";
 
 export function SoundControls({ settings, onMute, onVolume }) {
@@ -23,12 +23,16 @@ export function SoundControls({ settings, onMute, onVolume }) {
   );
 }
 
-export function ScanOverlay({ active }) {
+export function ScanOverlay({ active, progress = 0, onCancel }) {
   if (!active) return null;
   return (
     <div className="scan-overlay" role="status" aria-live="polite">
       <div className="scan-line" />
-      <span>SCANNING DATA</span>
+      <div className="scan-overlay-status">
+        <span>SCANNING DATA {Math.round(progress * 100)}%</span>
+        <progress max="1" value={progress} />
+        {onCancel && <button type="button" onClick={onCancel}>Cancel</button>}
+      </div>
     </div>
   );
 }
@@ -44,7 +48,7 @@ export function AchievementToast({ achievement }) {
   );
 }
 
-export function AchievementsDialog({ progress, onClose, onReset }) {
+export function AchievementsDialog({ progress, onClose, onReset, onUnlockHell }) {
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [resetting, setResetting] = useState(false);
   const earnedAchievementCount = ACHIEVEMENTS.filter((achievement) => progress.achievements[achievement.id]).length;
@@ -82,9 +86,16 @@ export function AchievementsDialog({ progress, onClose, onReset }) {
         </div>
         <div className={`achievement-reset ${confirmingReset ? "confirming" : ""}`}>
           {!confirmingReset ? (
-            <button type="button" className="achievement-reset-button" onClick={() => setConfirmingReset(true)}>
-              Reset Progress
-            </button>
+            <>
+              {onUnlockHell && (
+                <button type="button" className="achievement-hell-test-button" onClick={onUnlockHell}>
+                  Unlock HELL DISK
+                </button>
+              )}
+              <button type="button" className="achievement-reset-button" onClick={() => setConfirmingReset(true)}>
+                Reset Progress
+              </button>
+            </>
           ) : (
             <>
               <div>

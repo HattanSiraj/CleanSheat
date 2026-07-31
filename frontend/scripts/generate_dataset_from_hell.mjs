@@ -80,12 +80,6 @@ function dateFromOffset(offset) {
   return date.toISOString().slice(0, 10);
 }
 
-function shiftYears(isoDate, years) {
-  const date = new Date(`${isoDate}T00:00:00Z`);
-  date.setUTCFullYear(date.getUTCFullYear() + years);
-  return date.toISOString().slice(0, 10);
-}
-
 function excelSerial(isoDate) {
   const epoch = Date.UTC(1899, 11, 30);
   return String(Math.floor((Date.parse(`${isoDate}T00:00:00Z`) - epoch) / 86400000));
@@ -313,7 +307,7 @@ function corruptRow(row, rowNumber, random, summary) {
     mark(summary, "mojibake text");
   }
   if (rowNumber % 73 === 0) {
-    row.Notes = `Customer called twice, then wrote:\n\"please don't call me again\"\nStatus in CRM says active`;
+    row.Notes = `Customer called twice, then wrote:\n"please don't call me again"\nStatus in CRM says active`;
     row["Shipping Address"] = row["Shipping Address"].replaceAll(" | ", "\n");
     mark(summary, "quoted multiline cells");
   }

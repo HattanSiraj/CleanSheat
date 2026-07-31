@@ -3,7 +3,22 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import Papa from "papaparse";
 import { CHALLENGES, hasCurrentChallengeRevision } from "./challengeData.js";
-import { evaluateChallenge, evaluateObjective, evaluateRule } from "./challengeEngine.js";
+import { evaluateChallenge, evaluateChallengeInChunks, evaluateObjective, evaluateRule } from "./challengeEngine.js";
+
+test("chunked challenge evaluation matches the synchronous evaluator", async () => {
+  const challenge = CHALLENGES.find((item) => item.createRows);
+  const rows = challenge.createRows();
+  const context = { rows, columns: Object.keys(rows[0]), columnRules: {}, history: [] };
+  let yields = 0;
+
+  const expected = evaluateChallenge(challenge, context);
+  const actual = await evaluateChallengeInChunks(challenge, context, {
+    yieldControl: async () => { yields += 1; },
+  });
+
+  assert.deepEqual(actual, expected);
+  assert.equal(yields, challenge.objectives.length + (challenge.rules?.length ?? 0));
+});
 
 test("generated challenge datasets are deterministic and match their advertised size", () => {
   for (const challenge of CHALLENGES.filter((item) => item.createRows)) {
@@ -28,6 +43,56 @@ test("every campaign file has a full objective list", () => {
   for (const challenge of CHALLENGES) {
     assert.ok(challenge.objectives.length >= 6);
   }
+});
+
+test("HELL DISK contains six deterministic corrupted files", () => {
+  const hellChallenges = CHALLENGES.filter((challenge) => challenge.pack === "hell");
+  assert.equal(hellChallenges.length, 6);
+  assert.deepEqual(hellChallenges.map((challenge) => challenge.packOrder), [1, 2, 3, 4, 5, 6]);
+  assert.ok(hellChallenges.every((challenge) => /[0-9_[\]█/:)]/.test(challenge.title)));
+
+  const missingChallenge = hellChallenges.find((challenge) => challenge.id === "hell-missing-value-cult");
+  const rows = missingChallenge.createRows();
+  assert.ok(rows.every((row) => /^READ-[0-9]{6}$/.test(row["Reading ID"])));
+  assert.equal(new Set(rows.map((row) => row["Reading ID"])).size, rows.length);
+});
+
+test("fill contracts verify the chosen grouped statistic against source rows", () => {
+  const sourceRows = [
+    { ID: "1", Group: "A", Value: "10" },
+    { ID: "2", Group: "A", Value: "20" },
+    { ID: "3", Group: "A", Value: "" },
+    { ID: "4", Group: "B", Value: "7" },
+    { ID: "5", Group: "B", Value: "" },
+  ];
+  const challenge = {
+    objectives: [{
+      id: "group-average",
+      title: "Fill each group average",
+      kind: "fillContract",
+      idColumn: "ID",
+      column: "Value",
+      groupBy: "Group",
+      method: "average",
+      expectedType: "Number",
+    }],
+    createRows: () => sourceRows,
+  };
+  const context = {
+    columns: ["ID", "Group", "Value"],
+    columnRules: { Value: { type: "Number" } },
+    rows: sourceRows.map((row) => (
+      row.ID === "3" ? { ...row, Value: "15.00" }
+        : row.ID === "5" ? { ...row, Value: "7.00" }
+          : row
+    )),
+  };
+
+  assert.equal(evaluateChallenge(challenge, context).complete, true);
+  assert.equal(evaluateChallenge(challenge, {
+    ...context,
+    rows: context.rows.map((row) => row.ID === "3" ? { ...row, Value: "14" } : row),
+  }).complete, false);
 });
 
 test("formula objectives reject missing operands and accept matching totals", () => {
@@ -123,7 +188,7 @@ test("cafe challenge needs a calculated column and removes the kid notes", () =>
 
   const items = ["Coffee Beans", "Oat Milk", "Croissants", "Paper Cups", "Chocolate Syrup"];
   const rows = sourceRows.map((row, index) => {
-    const { "Kid Notes": ignored, ...cleanRow } = row;
+    const { "Kid Notes": _ignored, ...cleanRow } = row;
     return {
       ...cleanRow,
       "Stock Check ID": `CAFE-${String(index + 1).padStart(3, "0")}`,
@@ -162,7 +227,7 @@ test("dataset from hell can be completed with the new calculation chain", () => 
     const taxPercent = numericOr(row["Tax Percent"], 15);
     const discount = Number((gross * discountPercent / 100).toFixed(2));
     const tax = Number(((gross - discount) * taxPercent / 100).toFixed(2));
-    const { "Legacy Total": ignored, ...cleanRow } = row;
+    const { "Legacy Total": _ignored, ...cleanRow } = row;
     return [{
       ...cleanRow,
       Email: String(row.Email).includes("@") ? row.Email : `fixed.${index}@example.com`,
@@ -758,7 +823,7 @@ function normalizeRetailRows(sourceRows) {
     const customerId = String(row["Customer ID"] ?? "").trim();
     const counts = countriesByCustomer.get(customerId) ?? new Map();
     row.Country = [...counts.entries()]
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0] ?? "";
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0] ?? "United Kingdom";
   }
   return rows;
 }

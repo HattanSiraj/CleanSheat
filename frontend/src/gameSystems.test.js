@@ -25,6 +25,7 @@ import {
   hasMovingDesktopFiles,
   isFileInRecycleBin,
   isFileNearTarget,
+  releaseFileFromTarget,
   resizeDesktopFiles,
   stepDesktopPhysics,
 } from "./game/desktopPhysics.js";
@@ -35,6 +36,9 @@ import {
   getBootMachineState,
   getChallengeModuleState,
   getInitialMachineChallengeId,
+  getPackChallenges,
+  isCoreCampaignComplete,
+  isHellCampaignComplete,
 } from "./game/campaignMachine.js";
 
 test("challenge grades reward clean complete runs without a move limit", () => {
@@ -165,6 +169,39 @@ test("repair console selects saved work before the next unfinished challenge", (
   assert.equal(getInitialMachineChallengeId(challenges, finished), "one");
 });
 
+test("campaign packs unlock and select their own unfinished files", () => {
+  const challenges = [
+    { id: "boot-sequence", number: 0, tutorial: true, pack: "boot" },
+    { id: "core-one", number: 1, pack: "core" },
+    { id: "core-two", number: 2, pack: "core" },
+    { id: "hell-two", number: 2, pack: "hell", packOrder: 2 },
+    { id: "hell-one", number: 1, pack: "hell", packOrder: 1 },
+  ];
+  const coreProgress = {
+    ...createGameProgress(),
+    records: {
+      "boot-sequence": { complete: true },
+      "core-one": { complete: true },
+      "core-two": { complete: true },
+    },
+  };
+
+  assert.deepEqual(getPackChallenges(challenges, "hell").map((challenge) => challenge.id), ["hell-one", "hell-two"]);
+  assert.equal(isCoreCampaignComplete(challenges, coreProgress), true);
+  assert.equal(isHellCampaignComplete(challenges, coreProgress), false);
+  assert.equal(getInitialMachineChallengeId(challenges, coreProgress, [], "hell"), "hell-one");
+
+  const contained = {
+    ...coreProgress,
+    records: {
+      ...coreProgress.records,
+      "hell-one": { complete: true },
+      "hell-two": { complete: true },
+    },
+  };
+  assert.equal(isHellCampaignComplete(challenges, contained), true);
+});
+
 test("challenge modules report locked saved and completed states", () => {
   const challenge = { id: "one" };
   const progress = createGameProgress();
@@ -208,6 +245,23 @@ test("achievements unlock once and keep secret achievements hidden until earned"
   assert.ok(earnedIds.includes("dataset-exorcist"));
   assert.ok(!earnedIds.includes("undo-addict"));
   assert.equal(findNewAchievements(first.progress, context).earned.length, 0);
+});
+
+test("Still Here unlocks after the sixth Hell file is contained", () => {
+  const records = Object.fromEntries(
+    Array.from({ length: 6 }, (_, index) => [`hell-file-${index + 1}`, { complete: true }]),
+  );
+  const progress = { ...createGameProgress(), records };
+  const context = {
+    challenge: { id: "hell-file-6", pack: "hell", objectives: [] },
+    evaluation: { complete: true, objectives: [] },
+    runStats: createRunStats(),
+    score: { grade: "A", moves: 20 },
+  };
+
+  const result = findNewAchievements(progress, context);
+  assert.ok(result.earned.some((achievement) => achievement.id === "hell-survivor"));
+  assert.equal(findNewAchievements(result.progress, context).earned.length, 0);
 });
 
 test("Regex Wizard needs Custom Regex on the completed objective column", () => {
@@ -378,6 +432,36 @@ test("wrong files are kicked away from the boot drive", () => {
   assert.ok(ejected.vy < -400);
   assert.equal(Math.abs(ejected.angularVelocity), 240);
   assert.equal(file.vx, 120);
+});
+
+test("ejected boot disks reappear outside the drive", () => {
+  const disk = {
+    id: "boot",
+    x: 0,
+    y: 0,
+    width: 58,
+    height: 70,
+    pinned: true,
+    dragging: false,
+    sleeping: true,
+    vx: 0,
+    vy: 0,
+    angularVelocity: 0,
+  };
+  const drive = { x: 300, y: 220, width: 100, height: 20 };
+  const bounds = { width: 1000, height: 700 };
+
+  const ejected = releaseFileFromTarget(disk, drive, bounds);
+  assert.equal(ejected.pinned, false);
+  assert.equal(ejected.sleeping, false);
+  assert.ok(ejected.vx < 0);
+  assert.ok(ejected.vy < 0);
+
+  const reduced = releaseFileFromTarget(disk, drive, bounds, true);
+  assert.equal(reduced.x, drive.x - disk.width - 18);
+  assert.equal(reduced.sleeping, true);
+  assert.equal(reduced.vx, 0);
+  assert.equal(reduced.vy, 0);
 });
 
 test("desktop resize keeps every loose file inside the new bounds", () => {

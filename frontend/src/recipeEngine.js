@@ -116,7 +116,7 @@ export function getRequiredColumns(initialColumns, steps, relationships = []) {
   return [...required];
 }
 
-export function getStepInputs(step, relationshipById = new Map()) {
+function getStepInputs(step, relationshipById = new Map()) {
   if (["findReplace", "fill", "textCleanup", "deduplicate", "deleteInvalidRows"].includes(step.type)) return step.columns ?? [];
   if (["numericConversion", "dateConversion"].includes(step.type)) return [step.column].filter(Boolean);
   if (step.type === "splitColumn") return [step.sourceColumn].filter(Boolean);

@@ -4,7 +4,7 @@ export const DEFAULT_MISSING_CONDITION = {
   value: "",
 };
 
-export const DEFAULT_MISSING_RULE = {
+const DEFAULT_MISSING_RULE = {
   missingPolicy: "required",
   missingTokens: [],
   missingTokenCaseSensitive: false,
@@ -51,7 +51,7 @@ export function isValueRequired(row, rule = DEFAULT_MISSING_RULE) {
   return evaluateMissingCondition(row, normalizedRule.missingCondition);
 }
 
-export function evaluateMissingCondition(row, condition = DEFAULT_MISSING_CONDITION) {
+function evaluateMissingCondition(row, condition = DEFAULT_MISSING_CONDITION) {
   const column = condition.column ?? "";
   if (!column) return true;
   const actual = String(row?.[column] ?? "").trim();

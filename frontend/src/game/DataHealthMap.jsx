@@ -1,16 +1,25 @@
-import React, { useMemo } from "react";
-import { buildDataHealthMap, getHealthCellLabel } from "./dataHealth.js";
+import { useMemo } from "react";
+import {
+  buildDataHealthMap,
+  formatHealthPercentage,
+  getHealthCellLabel,
+} from "./dataHealth.js";
 
 export function DataHealthMap({
   rowCount,
   columns,
   issues,
   current,
+  unidentifiedColumns = [],
   onIssueSelect,
 }) {
   const map = useMemo(
     () => buildDataHealthMap({ rowCount, columns, issues }),
     [columns, issues, rowCount],
+  );
+  const unidentifiedSet = useMemo(
+    () => new Set(unidentifiedColumns),
+    [unidentifiedColumns],
   );
   if (!map.cells.length) return null;
 
@@ -40,41 +49,95 @@ export function DataHealthMap({
           aria-label={current ? `Data health map with ${issueCount} issues` : "Data health map needs another scan"}
         >
           {map.cells.map((cell) => {
-            const intensity = map.maxIssues ? cell.issueCount / map.maxIssues : 0;
-            const tone = !cell.issueCount ? "clean" : intensity > 0.45 ? "danger" : "warning";
-            const label = getHealthCellLabel(cell, columns);
+            const bandColumns = columns.slice(cell.columnStart, cell.columnEnd + 1);
+            const unidentified = bandColumns.every((column) => unidentifiedSet.has(column));
+            const label = unidentified
+              ? `${bandColumns.join(" to ")}, choose a column type before scanning`
+              : getHealthCellLabel(cell, columns);
+            const x = (cell.columnBand * 10) + 0.7;
+            const y = (cell.rowBand * 6) + 0.7;
+            const width = 8.6;
             return (
-              <rect
-                className={`data-health-cell ${tone}`}
-                key={`${cell.rowBand}:${cell.columnBand}`}
-                x={(cell.columnBand * 10) + 0.7}
-                y={(cell.rowBand * 6) + 0.7}
-                width="8.6"
-                height="4.6"
-                rx="0.35"
-                tabIndex={current && cell.firstIssue ? 0 : undefined}
-                role={current && cell.firstIssue ? "button" : undefined}
-                aria-label={label}
-                onClick={() => current && cell.firstIssue && onIssueSelect?.(cell.firstIssue)}
-                onKeyDown={(event) => {
-                  if (!current || !cell.firstIssue || !["Enter", " "].includes(event.key)) return;
-                  event.preventDefault();
-                  onIssueSelect?.(cell.firstIssue);
-                }}
-              >
-                <title>{label}</title>
-              </rect>
+              <g key={`${cell.rowBand}:${cell.columnBand}`}>
+                <rect
+                  className={`data-health-cell ${cell.firstIssue ? "has-issues" : ""} ${unidentified ? "unidentified" : ""}`}
+                  x={x}
+                  y={y}
+                  width={width}
+                  height="4.6"
+                  rx="0.35"
+                  tabIndex={current && cell.firstIssue ? 0 : undefined}
+                  role={current && cell.firstIssue ? "button" : undefined}
+                  aria-label={label}
+                  onClick={() => current && cell.firstIssue && onIssueSelect?.(cell.firstIssue)}
+                  onKeyDown={(event) => {
+                    if (!current || !cell.firstIssue || !["Enter", " "].includes(event.key)) return;
+                    event.preventDefault();
+                    onIssueSelect?.(cell.firstIssue);
+                  }}
+                >
+                  <title>{label}</title>
+                </rect>
+                {!!cell.issueCount && (
+                  <rect
+                    className="data-health-issue-fill"
+                    x={x}
+                    y={y}
+                    width={width * cell.issuePercentage / 100}
+                    height="4.6"
+                    rx="0.35"
+                    aria-hidden="true"
+                  />
+                )}
+              </g>
             );
           })}
         </svg>
         <span className="data-health-axis bottom">BOTTOM</span>
       </div>
 
+      <div className="data-health-columns" aria-label="Column health percentages">
+        {map.columns.map((column) => {
+          const unidentified = unidentifiedSet.has(column.column);
+          const healthLabel = unidentified
+            ? "No type"
+            : current
+            ? formatHealthPercentage(column.healthPercentage)
+            : "??";
+          const issueLabel = unidentified
+            ? "Not scanned"
+            : current
+            ? `${column.issueCount.toLocaleString()} ${column.issueCount === 1 ? "issue" : "issues"}`
+            : "Scan needed";
+          const label = unidentified
+            ? `${column.column}, choose a column type before scanning`
+            : current
+            ? `${column.column}, ${healthLabel} healthy, ${issueLabel}`
+            : `${column.column}, scan needed`;
+          return (
+            <button
+              type="button"
+              className={`${column.issueCount ? "has-issues" : "clean"} ${unidentified ? "unidentified" : ""}`}
+              key={column.column}
+              title={label}
+              onClick={() => current && column.firstIssue && onIssueSelect?.(column.firstIssue)}
+              disabled={unidentified || !current || !column.firstIssue}
+            >
+              <span><strong>{column.column}</strong><b>{healthLabel}</b></span>
+              <span className="column-health-track" aria-hidden="true">
+                <i style={{ width: current && !unidentified ? `${column.healthPercentage}%` : "0%" }} />
+              </span>
+              <small>{issueLabel}</small>
+            </button>
+          );
+        })}
+      </div>
+
       <div className="data-health-footer">
-        <span><i className="clean" />Clean</span>
-        <span><i className="warning" />Some trouble</span>
-        <span><i className="danger" />Trouble pileup</span>
-        <small>{current && issueCount ? "Click a red block to jump into the mess" : current ? "Nothing red survived the scan" : "The map is waiting for fresh scan results"}</small>
+        <span><i className="clean" />Healthy share</span>
+        <span><i className="danger" />Issue share</span>
+        {!!unidentifiedSet.size && <span><i className="unidentified" />Not scanned</span>}
+        <small>{current && issueCount ? "Red shows how much of each block is affected" : current ? "Nothing red survived the scan" : "The map is waiting for fresh scan results"}</small>
       </div>
     </section>
   );

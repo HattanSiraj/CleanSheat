@@ -163,7 +163,7 @@ export function createScanFeedback({
       message: "SCAN FOUND TROUBLE",
       detail: `${issueCount.toLocaleString()} visible ${issueCount === 1 ? "issue remains" : "issues remain"}`,
       sound: "error",
-      duration: 850,
+      duration: 4000,
       priority: 2,
       particles: 8,
     }, options);
@@ -212,7 +212,7 @@ export function sampleActionTargets(action, limit = MAX_FEEDBACK_TARGETS) {
   return targets;
 }
 
-export function countActionChanges(action) {
+function countActionChanges(action) {
   if (!action) return 0;
   if (action.kind === "compound") {
     return (action.actions ?? []).reduce((total, child) => total + countActionChanges(child), 0);

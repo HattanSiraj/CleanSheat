@@ -3,13 +3,55 @@ import { cleanTextValue } from "./cleaningOperations.js";
 
 export function evaluateChallenge(challenge, context) {
   if (!challenge) return emptyEvaluation();
-  const needsSourceRows = challenge.objectives.some((objective) => objective.kind === "groupMedianFill");
+  const needsSourceRows = challenge.objectives.some((objective) => (
+    objective.kind === "groupMedianFill" || objective.kind === "fillContract"
+  ));
   const evaluationContext = {
     ...context,
     sourceRows: context.sourceRows ?? (needsSourceRows ? challenge.createRows?.() ?? [] : []),
   };
   const objectives = challenge.objectives.map((objective) => evaluateObjective(objective, evaluationContext));
   const rules = (challenge.rules ?? []).map((rule) => evaluateRule(rule, evaluationContext));
+  return summarizeChallenge(objectives, rules, context);
+}
+
+export async function evaluateChallengeInChunks(challenge, context, {
+  signal,
+  onProgress,
+  yieldControl = () => new Promise((resolve) => setTimeout(resolve, 0)),
+} = {}) {
+  if (!challenge) return emptyEvaluation();
+  const needsSourceRows = challenge.objectives.some((objective) => (
+    objective.kind === "groupMedianFill" || objective.kind === "fillContract"
+  ));
+  const evaluationContext = {
+    ...context,
+    sourceRows: context.sourceRows ?? (needsSourceRows ? challenge.createRows?.() ?? [] : []),
+  };
+  const workCount = challenge.objectives.length + (challenge.rules?.length ?? 0);
+  let completedWork = 0;
+  const objectives = [];
+  const rules = [];
+
+  for (const objective of challenge.objectives) {
+    throwIfAborted(signal);
+    objectives.push(evaluateObjective(objective, evaluationContext));
+    completedWork += 1;
+    onProgress?.(workCount ? completedWork / workCount : 1);
+    await yieldControl();
+  }
+  for (const rule of challenge.rules ?? []) {
+    throwIfAborted(signal);
+    rules.push(evaluateRule(rule, evaluationContext));
+    completedWork += 1;
+    onProgress?.(workCount ? completedWork / workCount : 1);
+    await yieldControl();
+  }
+
+  return summarizeChallenge(objectives, rules, context);
+}
+
+function summarizeChallenge(objectives, rules, context) {
   const completedCount = objectives.filter((objective) => objective.complete).length;
   const score = objectives.length ? Math.round(completedCount * 100 / objectives.length) : 0;
   const objectivesComplete = completedCount === objectives.length;
@@ -27,6 +69,13 @@ export function evaluateChallenge(challenge, context) {
     rulesPassed,
     moves: context.history?.length ?? 0,
   };
+}
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error("Operation cancelled");
+  error.name = "AbortError";
+  throw error;
 }
 
 export function evaluateObjective(objective, context) {
@@ -200,6 +249,10 @@ export function evaluateObjective(objective, context) {
 
   if (objective.kind === "groupMedianFill") {
     result = evaluateGroupMedianFill(objective, context);
+  }
+
+  if (objective.kind === "fillContract") {
+    result = evaluateFillContract(objective, context);
   }
 
   if (objective.kind === "groupConsistencyRecovery") {
@@ -426,25 +479,202 @@ function matchesGroupSelector(value, selector = {}) {
   return true;
 }
 
+function evaluateFillContract(objective, context) {
+  const sourceRows = context.sourceRows ?? [];
+  const rows = context.rows ?? [];
+  const rules = context.columnRules ?? {};
+  if (!sourceRows.length || !objective.idColumn || !objective.column) {
+    return { complete: false, detail: "Challenge fill source is unavailable" };
+  }
+  if (objective.expectedType && rules[objective.column]?.type !== objective.expectedType) {
+    return { complete: false, detail: `Set ${objective.column} to ${objective.expectedType}` };
+  }
+
+  const expected = buildFillContractValues(objective, sourceRows);
+  const currentById = new Map(rows.map((row) => [String(row[objective.idColumn] ?? ""), row]));
+  let failures = 0;
+  for (const [id, expectedValue] of expected) {
+    const row = currentById.get(id);
+    if (!row || !fillContractValuesMatch(row[objective.column], expectedValue, objective.tolerance)) {
+      failures += 1;
+    }
+  }
+
+  return {
+    complete: expected.size > 0 && failures === 0,
+    detail: failures
+      ? `${failures.toLocaleString()} ${objective.column} fills do not match`
+      : `${expected.size.toLocaleString()} ${objective.method} fills match`,
+  };
+}
+
+function buildFillContractValues(objective, sourceRows) {
+  const targets = sourceRows.filter((row) => isBlank(row[objective.column]));
+  const expected = new Map();
+  if (!targets.length) return expected;
+
+  if (objective.method === "distribution") {
+    const validValues = sourceRows
+      .map((row) => row[objective.column])
+      .filter((value) => !isBlank(value));
+    const allocations = buildDistributionValues(validValues, targets.length);
+    targets.forEach((row, index) => {
+      expected.set(String(row[objective.idColumn] ?? ""), allocations[index]);
+    });
+    return expected;
+  }
+
+  if (objective.method === "previous" || objective.method === "next") {
+    for (const groupRows of groupFillRows(sourceRows, objective.groupBy).values()) {
+      const sorted = [...groupRows].sort((left, right) => compareFillOrder(
+        left[objective.orderBy],
+        right[objective.orderBy],
+      ));
+      if (objective.orderDirection === "desc") sorted.reverse();
+      const traversal = objective.method === "next" ? [...sorted].reverse() : sorted;
+      let neighbor;
+      for (const row of traversal) {
+        const value = row[objective.column];
+        if (!isBlank(value)) neighbor = value;
+        else if (neighbor !== undefined) expected.set(String(row[objective.idColumn] ?? ""), neighbor);
+      }
+    }
+    return expected;
+  }
+
+  const validByGroup = groupFillRows(
+    sourceRows.filter((row) => !isBlank(row[objective.column])),
+    objective.groupBy,
+  );
+  for (const row of targets) {
+    const key = objective.groupBy ? String(row[objective.groupBy] ?? "").trim() : "__all__";
+    const values = (validByGroup.get(key) ?? []).map((item) => item[objective.column]);
+    const replacement = calculateFillStatistic(objective.method, values, objective.expectedType);
+    if (replacement !== undefined) expected.set(String(row[objective.idColumn] ?? ""), replacement);
+  }
+  return expected;
+}
+
+function groupFillRows(rows, groupBy) {
+  const groups = new Map();
+  for (const row of rows) {
+    const key = groupBy ? String(row[groupBy] ?? "").trim() : "__all__";
+    const values = groups.get(key) ?? [];
+    values.push(row);
+    groups.set(key, values);
+  }
+  return groups;
+}
+
+function calculateFillStatistic(method, values, expectedType) {
+  if (!values.length) return undefined;
+  if (method === "mode") {
+    const counts = new Map();
+    let winner = values[0];
+    let winnerCount = 0;
+    for (const value of values) {
+      const key = String(value).trim();
+      const count = (counts.get(key)?.count ?? 0) + 1;
+      if (!counts.has(key)) counts.set(key, { value, count });
+      else counts.get(key).count = count;
+      if (count > winnerCount) {
+        winner = counts.get(key).value;
+        winnerCount = count;
+      }
+    }
+    return winner;
+  }
+
+  const numbers = values.map(toNumber).filter((value) => value !== null);
+  if (!numbers.length) return undefined;
+  const value = method === "median"
+    ? median(numbers)
+    : numbers.reduce((sum, number) => sum + number, 0) / numbers.length;
+  return expectedType === "Integer" ? String(Math.round(value)) : value.toFixed(2);
+}
+
+function buildDistributionValues(values, targetCount) {
+  if (!values.length) return [];
+  const counts = new Map();
+  values.forEach((value, index) => {
+    const key = String(value).trim();
+    if (!counts.has(key)) counts.set(key, { value, sourceCount: 0, order: index });
+    counts.get(key).sourceCount += 1;
+  });
+  const allocations = [...counts.values()].map((item) => {
+    const raw = targetCount * item.sourceCount / values.length;
+    return { ...item, raw, count: Math.floor(raw) };
+  });
+  let remainder = targetCount - allocations.reduce((sum, item) => sum + item.count, 0);
+  const ranked = [...allocations].sort((left, right) => (
+    right.raw - Math.floor(right.raw) - (left.raw - Math.floor(left.raw))
+    || right.sourceCount - left.sourceCount
+    || left.order - right.order
+  ));
+  for (const allocation of ranked) {
+    if (!remainder) break;
+    allocation.count += 1;
+    remainder -= 1;
+  }
+  return allocations.flatMap((allocation) => Array(allocation.count).fill(allocation.value));
+}
+
+function compareFillOrder(left, right) {
+  const leftText = String(left ?? "").trim();
+  const rightText = String(right ?? "").trim();
+  const leftNumber = Number(leftText);
+  const rightNumber = Number(rightText);
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) return leftNumber - rightNumber;
+  const leftDate = Date.parse(leftText);
+  const rightDate = Date.parse(rightText);
+  if (Number.isFinite(leftDate) && Number.isFinite(rightDate)) return leftDate - rightDate;
+  return leftText.localeCompare(rightText, undefined, { numeric: true });
+}
+
+function fillContractValuesMatch(actual, expected, tolerance = 0.01) {
+  const actualNumber = toNumber(actual);
+  const expectedNumber = toNumber(expected);
+  if (actualNumber !== null && expectedNumber !== null) {
+    return Math.abs(actualNumber - expectedNumber) <= tolerance;
+  }
+  return String(actual ?? "") === String(expected ?? "");
+}
+
 function evaluateExportSchema(objective, context) {
-  const splitReady = evaluateTransformedColumns(objective.split, context).complete;
-  const combineReady = evaluateTransformedColumns(objective.combine, context).complete;
-  const rulesReady = evaluateValidationContract({
-    checks: objective.checks,
+  const transforms = objective.transforms ?? [objective.split, objective.combine].filter(Boolean);
+  const transformsReady = transforms.every((transform) => (
+    evaluateTransformedColumns(transform, context).complete
+  ));
+  const checks = objective.checks ?? [];
+  const rulesReady = !checks.length || evaluateValidationContract({
+    checks,
     requireScan: objective.requireScan,
   }, context).complete;
   const expectedColumns = objective.expectedColumns ?? [];
-  const orderReady = expectedColumns.length === context.columns.length
-    && expectedColumns.every((column, index) => context.columns[index] === column);
-  const ready = [splitReady, combineReady, rulesReady, orderReady].filter(Boolean).length;
+  const orderReady = !expectedColumns.length || (
+    expectedColumns.length === context.columns.length
+    && expectedColumns.every((column, index) => context.columns[index] === column)
+  );
+  const removedColumns = objective.removedColumns ?? [];
+  const removedReady = removedColumns.every((column) => !context.columns.includes(column));
+  const checksToReport = [
+    transforms.length ? transformsReady : null,
+    checks.length ? rulesReady : null,
+    expectedColumns.length ? orderReady : null,
+    removedColumns.length ? removedReady : null,
+  ].filter((value) => value !== null);
+  const ready = checksToReport.filter(Boolean).length;
+  const total = checksToReport.length;
   let problem = "";
-  if (!splitReady) problem = "split InvoiceDate into the required columns";
-  else if (!combineReady) problem = "build Product Label with the required separator";
-  else if (!rulesReady) problem = "configure the derived column formats and scan";
-  else if (!orderReady) problem = "move the columns into the final export order";
+  if (!transformsReady) problem = objective.transformHint ?? "finish the required split and combine operations";
+  else if (!rulesReady) problem = objective.validationHint ?? "configure the derived column formats and scan";
+  else if (!removedReady) problem = objective.removedHint ?? "remove the unwanted source columns";
+  else if (!orderReady) problem = objective.orderHint ?? "move the columns into the final export order";
   return {
-    complete: ready === 4,
-    detail: ready === 4 ? "Export columns and order are ready" : `${ready}/4 export steps ready, ${problem}`,
+    complete: total > 0 && ready === total,
+    detail: total > 0 && ready === total
+      ? "Export columns and order are ready"
+      : `${ready}/${total} export steps ready, ${problem}`,
   };
 }
 

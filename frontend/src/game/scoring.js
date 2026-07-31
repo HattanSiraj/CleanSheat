@@ -35,7 +35,7 @@ export function calculateChallengeScore(challenge, evaluation, runStats = {}) {
   };
 }
 
-export function getGrade(score) {
+function getGrade(score) {
   if (score >= 98) return "S";
   if (score >= 88) return "A";
   if (score >= 75) return "B";

@@ -1,18 +1,24 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   FREE_CLEAN_PREVIEW,
   buildOrthogonalCablePath,
   getBootMachineState,
   getChallengeModuleState,
   getInitialMachineChallengeId,
+  getPackChallenges,
+  isCoreCampaignComplete,
+  isHellCampaignComplete,
 } from "./campaignMachine.js";
 import { isBootComplete } from "./progress.js";
+import { CorruptedText } from "./CorruptedText.jsx";
 import { DesktopJunkPhysics } from "./DesktopJunkPhysics.jsx";
 
 const BOOT_ANIMATION_MS = 1050;
 const EJECT_ANIMATION_MS = 420;
 const MODULE_POWER_DELAY_MS = 180;
 const LOCKED_REACTION_MS = 1500;
+const HELL_INSERT_MS = 1750;
+const HELL_EJECT_MS = 720;
 
 export function CampaignMap({
   challenges,
@@ -28,16 +34,26 @@ export function CampaignMap({
   onSound,
   onClipbitHit,
   soundControls,
+  activePack = "core",
+  onPackChange,
+  onHellTransition,
+  containmentSignal = 0,
+  onContainmentComplete,
+  reducedEffects = false,
 }) {
   const tutorial = challenges.find((challenge) => challenge.tutorial);
-  const missions = challenges
-    .filter((challenge) => !challenge.tutorial)
-    .sort((left, right) => left.number - right.number);
+  const coreMissions = getPackChallenges(challenges, "core");
+  const hellMissions = getPackChallenges(challenges, "hell");
+  const missions = activePack === "hell" ? hellMissions : coreMissions;
+  const missionKey = missions.map((challenge) => challenge.id).join("|");
   const bootComplete = isBootComplete(progress);
+  const hellUnlocked = isCoreCampaignComplete(challenges, progress);
+  const hellComplete = isHellCampaignComplete(challenges, progress);
   const bootSaved = savedWorkspaceIds.includes(`challenge:${tutorial?.id}`);
   const machineRef = useRef(null);
   const outputPortRef = useRef(null);
   const driveRef = useRef(null);
+  const hellDriveRef = useRef(null);
   const modulePortRefs = useRef(new Map());
   const bootTimersRef = useRef([]);
   const lockedTimerRef = useRef(null);
@@ -46,26 +62,37 @@ export function CampaignMap({
   const selectionTouchedRef = useRef(false);
   const onSoundRef = useRef(onSound);
   const onPowerSequenceCompleteRef = useRef(onPowerSequenceComplete);
+  const onPackChangeRef = useRef(onPackChange);
+  const onHellTransitionRef = useRef(onHellTransition);
+  const onContainmentCompleteRef = useRef(onContainmentComplete);
   const [sessionDiskInserted, setSessionDiskInserted] = useState(false);
   const [sessionDiskEjected, setSessionDiskEjected] = useState(false);
+  const [bootDiskEjectSignal, setBootDiskEjectSignal] = useState(0);
+  const [hellDiskEjectSignal, setHellDiskEjectSignal] = useState(0);
   const [manualPowerSequenceSignal, setManualPowerSequenceSignal] = useState(0);
   const [bootPhase, setBootPhase] = useState("waiting");
   const [bootDriveStatus, setBootDriveStatus] = useState("");
+  const [hellDriveStatus, setHellDriveStatus] = useState("");
+  const [hellPhase, setHellPhase] = useState(activePack === "hell" ? "active" : "idle");
+  const [containmentPhase, setContainmentPhase] = useState("idle");
   const [machineAlert, setMachineAlert] = useState(null);
   const [powerLeakModuleId, setPowerLeakModuleId] = useState("");
   const [selectedChallengeId, setSelectedChallengeId] = useState(() => (
-    getInitialMachineChallengeId(challenges, progress, savedWorkspaceIds)
+    getInitialMachineChallengeId(challenges, progress, savedWorkspaceIds, activePack)
   ));
   const [isFreeCleanSelected, setIsFreeCleanSelected] = useState(false);
   const [noPowerChallengeId, setNoPowerChallengeId] = useState("");
   const [cableGeometry, setCableGeometry] = useState({ width: 0, height: 0, paths: [] });
-  const [reducedMotion, setReducedMotion] = useState(false);
+  const [systemReducedMotion, setSystemReducedMotion] = useState(false);
   const [poweredCount, setPoweredCount] = useState(() => (
     bootComplete && !powerSequenceSignal ? missions.length : 0
   ));
 
   onSoundRef.current = onSound;
   onPowerSequenceCompleteRef.current = onPowerSequenceComplete;
+  onPackChangeRef.current = onPackChange;
+  onHellTransitionRef.current = onHellTransition;
+  onContainmentCompleteRef.current = onContainmentComplete;
 
   const permanentMachineState = getBootMachineState(
     progress,
@@ -74,6 +101,9 @@ export function CampaignMap({
     sessionDiskEjected,
   );
   const diskInserted = permanentMachineState.diskInserted || ["booting", "ejecting"].includes(bootPhase);
+  const reducedMotion = reducedEffects || systemReducedMotion;
+  const hellDiskInserted = activePack === "hell" || ["inserting", "ejecting"].includes(hellPhase);
+  const hellMode = hellDiskInserted;
   const machinePowered = bootComplete && diskInserted && !["booting", "ejecting"].includes(bootPhase);
   const powerSequenceActive = machinePowered && poweredCount < missions.length;
   const selectedChallenge = challenges.find((challenge) => challenge.id === selectedChallengeId)
@@ -83,11 +113,25 @@ export function CampaignMap({
 
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const update = () => setReducedMotion(query.matches);
+    const update = () => setSystemReducedMotion(query.matches);
     update();
     query.addEventListener?.("change", update);
     return () => query.removeEventListener?.("change", update);
   }, []);
+
+  useEffect(() => {
+    if (!containmentSignal || activePack !== "hell") return undefined;
+
+    setContainmentPhase("sealing");
+    onSoundRef.current?.("hellContained");
+    onHellTransitionRef.current?.("contained");
+    const timerId = window.setTimeout(() => {
+      setContainmentPhase("contained");
+      onContainmentCompleteRef.current?.();
+    }, reducedMotion ? 240 : 2200);
+
+    return () => window.clearTimeout(timerId);
+  }, [activePack, containmentSignal, reducedMotion]);
 
   useEffect(() => {
     if (["booting", "ejecting"].includes(bootPhase)) return;
@@ -100,8 +144,20 @@ export function CampaignMap({
 
   useEffect(() => {
     if (selectionTouchedRef.current) return;
-    setSelectedChallengeId(getInitialMachineChallengeId(challenges, progress, savedWorkspaceIds));
-  }, [bootComplete, challenges, progress, savedWorkspaceIds]);
+    setSelectedChallengeId(getInitialMachineChallengeId(challenges, progress, savedWorkspaceIds, activePack));
+  }, [activePack, bootComplete, challenges, progress, savedWorkspaceIds]);
+
+  useEffect(() => {
+    if (["inserting", "ejecting"].includes(hellPhase)) return;
+    setHellPhase(activePack === "hell" ? "active" : "idle");
+    setIsFreeCleanSelected(false);
+    setSelectedChallengeId(getInitialMachineChallengeId(
+      challenges,
+      progress,
+      savedWorkspaceIds,
+      activePack,
+    ));
+  }, [activePack]);
 
   useEffect(() => {
     if (!machinePowered) {
@@ -134,7 +190,7 @@ export function CampaignMap({
     };
     timerIds.push(window.setTimeout(powerNextModule, 280));
     return () => timerIds.forEach((timerId) => window.clearTimeout(timerId));
-  }, [machinePowered, manualPowerSequenceSignal, missions.length, powerSequenceSignal, reducedMotion]);
+  }, [machinePowered, manualPowerSequenceSignal, missionKey, missions.length, powerSequenceSignal, reducedMotion]);
 
   useEffect(() => {
     const unpoweredMissions = missions.filter((_, index) => !machinePowered || index >= poweredCount);
@@ -172,7 +228,7 @@ export function CampaignMap({
       if (pulseTimer) window.clearTimeout(pulseTimer);
       if (clearTimer) window.clearTimeout(clearTimer);
     };
-  }, [machinePowered, missions.length, poweredCount, reducedMotion]);
+  }, [machinePowered, missionKey, missions.length, poweredCount, reducedMotion]);
 
   useLayoutEffect(() => {
     const machine = machineRef.current;
@@ -221,7 +277,7 @@ export function CampaignMap({
       if (frameId) window.cancelAnimationFrame(frameId);
       observer.disconnect();
     };
-  }, [missions.length]);
+  }, [missionKey, missions.length]);
 
   useEffect(() => () => {
     clearBootTimers();
@@ -271,6 +327,74 @@ export function CampaignMap({
     const ejectDelay = reducedMotion ? 80 : EJECT_ANIMATION_MS;
     bootTimersRef.current.push(window.setTimeout(() => {
       setBootPhase("waiting");
+      setBootDiskEjectSignal((current) => current + 1);
+    }, ejectDelay));
+  }
+
+  function insertHellDisk() {
+    if (!hellUnlocked || hellDiskInserted || ["inserting", "ejecting"].includes(hellPhase)) return;
+    if (!machinePowered) {
+      showMachineAlert("hell-no-power");
+      setHellDiskEjectSignal((current) => current + 1);
+      return;
+    }
+
+    clearBootTimers();
+    setHellDriveStatus("");
+    setMachineAlert(null);
+    setNoPowerChallengeId("");
+    setIsFreeCleanSelected(false);
+    setPoweredCount(0);
+    setHellPhase("inserting");
+    onHellTransitionRef.current?.("start");
+    const totalDelay = reducedMotion ? 160 : HELL_INSERT_MS;
+    const breachDelay = reducedMotion ? 50 : 430;
+    const swapDelay = reducedMotion ? 90 : 980;
+    bootTimersRef.current.push(window.setTimeout(() => {
+      onHellTransitionRef.current?.("breach");
+    }, breachDelay));
+    bootTimersRef.current.push(window.setTimeout(() => {
+      onPackChangeRef.current?.("hell");
+      selectionTouchedRef.current = false;
+      setSelectedChallengeId(getInitialMachineChallengeId(
+        challenges,
+        progress,
+        savedWorkspaceIds,
+        "hell",
+      ));
+    }, swapDelay));
+    bootTimersRef.current.push(window.setTimeout(() => {
+      setHellPhase("active");
+      setManualPowerSequenceSignal((current) => current + 1);
+      onHellTransitionRef.current?.("active");
+    }, totalDelay));
+  }
+
+  function ejectHellDisk() {
+    if (!hellDiskInserted || ["inserting", "ejecting"].includes(hellPhase)) return;
+    clearBootTimers();
+    setHellDriveStatus("");
+    setMachineAlert(null);
+    setNoPowerChallengeId("");
+    setIsFreeCleanSelected(false);
+    setPoweredCount(0);
+    setHellPhase("ejecting");
+    onSoundRef.current?.("hellEject");
+    onHellTransitionRef.current?.("ejecting");
+    const ejectDelay = reducedMotion ? 100 : HELL_EJECT_MS;
+    bootTimersRef.current.push(window.setTimeout(() => {
+      onPackChangeRef.current?.("core");
+      selectionTouchedRef.current = false;
+      setSelectedChallengeId(getInitialMachineChallengeId(
+        challenges,
+        progress,
+        savedWorkspaceIds,
+        "core",
+      ));
+      setHellPhase("idle");
+      setHellDiskEjectSignal((current) => current + 1);
+      setManualPowerSequenceSignal((current) => current + 1);
+      onHellTransitionRef.current?.("ejected");
     }, ejectDelay));
   }
 
@@ -280,7 +404,7 @@ export function CampaignMap({
     machineAlertTimerRef.current = window.setTimeout(() => {
       setMachineAlert(null);
       machineAlertTimerRef.current = null;
-    }, kind === "boot-trash" ? 1900 : 1450);
+    }, ["boot-trash", "hell-trash"].includes(kind) ? 1900 : 1450);
   }
 
   function selectModule(challenge, moduleIndex) {
@@ -302,7 +426,7 @@ export function CampaignMap({
   }
 
   function selectTutorial() {
-    if (!diskInserted || ["booting", "ejecting"].includes(bootPhase)) return;
+    if (hellMode || !diskInserted || ["booting", "ejecting"].includes(bootPhase)) return;
     selectionTouchedRef.current = true;
     setNoPowerChallengeId("");
     setIsFreeCleanSelected(false);
@@ -339,23 +463,49 @@ export function CampaignMap({
 
   function renderComputerScreen() {
     if (machineAlert) {
-      const trashed = machineAlert.kind === "boot-trash";
+      const bootTrashed = machineAlert.kind === "boot-trash";
+      const hellTrashed = machineAlert.kind === "hell-trash";
+      const noHellPower = machineAlert.kind === "hell-no-power";
+      const trashed = bootTrashed || hellTrashed;
       return (
         <div className={`machine-screen-message media-error ${trashed ? "boot-trashed" : "wrong-disk"}`}>
-          <span>{trashed ? "RECOVERY MEDIA LOST" : "DRIVE REJECTED FILE"}</span>
-          <strong>{trashed ? "BOOT DISK TRASHED" : "INVALID MEDIA"}</strong>
+          <span>{trashed ? "REMOVABLE MEDIA LOST" : noHellPower ? "DATA DRIVE OFFLINE" : "DRIVE REJECTED FILE"}</span>
+          <strong>{bootTrashed ? "BOOT DISK TRASHED" : hellTrashed ? "HELL DISK TRASHED" : noHellPower ? "NO POWER" : "INVALID MEDIA"}</strong>
           <p>{trashed
-            ? "Restore Junk before the computer notices"
-            : `${machineAlert.fileName || "That file"} is not a boot disk`}</p>
+            ? hellTrashed ? "Honestly this may have been the correct decision" : "Restore Junk before the computer notices"
+            : noHellPower
+              ? "Wake the machine before inserting cursed software"
+              : `${machineAlert.fileName || "That file"} does not belong in this drive`}</p>
         </div>
       );
     }
     if (noPowerChallenge) {
       return (
         <div className="machine-screen-message no-power">
-          <span>FILE {noPowerChallenge.number}</span>
+          <span>{noPowerChallenge.pack === "hell" ? `H${noPowerChallenge.number}` : `FILE ${noPowerChallenge.number}`}</span>
           <strong>NO POWER</strong>
           <p>Finish Boot Sequence before touching this module again</p>
+        </div>
+      );
+    }
+    if (["inserting", "ejecting"].includes(hellPhase)) {
+      const ejecting = hellPhase === "ejecting";
+      return (
+        <div className={`machine-screen-message hell-transition ${ejecting ? "ejecting" : "inserting"}`} aria-live="assertive">
+          <span>{ejecting ? "DATA DRIVE" : "UNKNOWN MEDIA DETECTED"}</span>
+          <strong>{ejecting ? "CONTAINING BREACH" : "FILESYSTEM SCREAMING"}</strong>
+          <div className="machine-boot-lines" aria-hidden="true"><i /><i /><i /><i /></div>
+          <p>{ejecting ? "Returning to the part of the machine that only looks broken" : "This disk should not have passed quality control"}</p>
+        </div>
+      );
+    }
+    if (containmentPhase === "sealing") {
+      return (
+        <div className="machine-screen-message hell-containment-message" aria-live="assertive">
+          <span>H6 // FINAL SECTOR</span>
+          <strong>CONTAINMENT ATTEMPT ██████</strong>
+          <div className="machine-boot-lines" aria-hidden="true"><i /><i /><i /><i /></div>
+          <p>Six files cleaned // signal collapsing // do not celebrate yet</p>
         </div>
       );
     }
@@ -414,10 +564,16 @@ export function CampaignMap({
     return (
       <div className="machine-screen-details">
         <div className="machine-screen-topline">
-          <span>{challenge.tutorial ? "BOOT 0" : `FILE ${challenge.number}`}</span>
+          <span>{challenge.tutorial ? "BOOT 0" : challenge.pack === "hell" ? `H${challenge.number}` : `FILE ${challenge.number}`}</span>
           <span>{status}</span>
         </div>
-        <h2>{challenge.title}</h2>
+        <CorruptedText
+          as="h2"
+          active={challenge.pack === "hell"}
+          reducedEffects={reducedMotion}
+        >
+          {challenge.title}
+        </CorruptedText>
         <p>{challenge.subtitle}</p>
         <div className="machine-screen-stats">
           <span>{challenge.rowCount.toLocaleString()} rows</span>
@@ -432,7 +588,8 @@ export function CampaignMap({
   }
 
   return (
-    <div className={`campaign-screen ${machinePowered ? "booted" : "locked"} ${powerSequenceActive ? "powering-up" : ""}`}>
+    <div className={`campaign-screen ${machinePowered ? "booted" : "locked"} ${powerSequenceActive ? "powering-up" : ""} ${hellMode ? "hell-mode" : ""} ${hellPhase === "inserting" ? "hell-breach" : ""} ${hellComplete ? "hell-contained" : ""} ${containmentPhase === "sealing" ? "hell-containment-event" : ""}`}>
+      <div className="hell-screen-corruption" aria-hidden="true"><i /><i /><i /><i /></div>
       <header className="campaign-menu-bar">
         <div>
           <span className="campaign-status-light" />
@@ -462,14 +619,14 @@ export function CampaignMap({
           </div>
 
           <div className="campaign-intro">
-            <span className="section-label">System recovery</span>
+            <span className="section-label">{hellMode ? "Containment failure" : "System recovery"}</span>
             <h1 id="campaign-title">{machinePowered
-              ? "Pick the next broken module"
+              ? hellMode ? "Pick what kind of terrible happens next" : "Pick the next broken module"
               : sessionDiskEjected
                 ? "You turned the entire machine off"
                 : "This machine forgot how to start"}</h1>
             <p>{machinePowered
-              ? "Choose a file module and inspect it on the main screen"
+              ? hellMode ? "All six files are awake and none of them are ranked by mercy" : "Choose a file module and inspect it on the main screen"
               : sessionDiskEjected
                 ? "Find the boot disk and put it back before anyone notices"
                 : "Find the boot disk and wake up the rest of the machine"}</p>
@@ -537,7 +694,7 @@ export function CampaignMap({
                     type="button"
                     className={`boot-selector ${selectedChallengeId === tutorial?.id && !isFreeCleanSelected ? "selected" : ""}`}
                     onClick={selectTutorial}
-                    disabled={!diskInserted || ["booting", "ejecting"].includes(bootPhase)}
+                    disabled={hellMode || !diskInserted || ["booting", "ejecting"].includes(bootPhase)}
                     data-game-sound="custom"
                   >
                     <span>BOOT 0</span>
@@ -564,25 +721,54 @@ export function CampaignMap({
                     </span>
                   </button>
                 </div>
-                <div className="boot-drive-panel">
-                  <span className={`boot-drive-light ${diskInserted ? "active" : ""}`} />
-                  <div ref={driveRef} className={`boot-floppy-drive ${bootDriveStatus}`}>
-                    <span>{bootPhase === "ejecting" ? "EJECTING" : diskInserted ? "DISK LOADED" : "INSERT DISK"}</span>
-                    {diskInserted && <i className="boot-inserted-disk" aria-hidden="true" />}
+                <div className="boot-drive-stack">
+                  <div className="boot-drive-panel">
+                    <span className={`boot-drive-light ${diskInserted ? "active" : ""}`} />
+                    <div ref={driveRef} className={`boot-floppy-drive ${bootDriveStatus}`}>
+                      <span>{bootPhase === "ejecting" ? "EJECTING" : diskInserted ? "DISK LOADED" : "INSERT DISK"}</span>
+                      {diskInserted && <i className="boot-inserted-disk" aria-hidden="true" />}
+                    </div>
+                    <div className="boot-drive-footer">
+                      <small>BOOT DRIVE</small>
+                      {diskInserted && (
+                        <button
+                          type="button"
+                          className="boot-eject-button"
+                          onClick={ejectBootDisk}
+                          disabled={["booting", "ejecting"].includes(bootPhase)}
+                          data-game-sound="custom"
+                        >
+                          EJECT
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <div className="boot-drive-footer">
-                    <small>3.5 CLEAN DRIVE</small>
-                    {diskInserted && (
-                      <button
-                        type="button"
-                        className="boot-eject-button"
-                        onClick={ejectBootDisk}
-                        disabled={["booting", "ejecting"].includes(bootPhase)}
-                        data-game-sound="custom"
-                      >
-                        EJECT
-                      </button>
-                    )}
+                  <div className={`boot-drive-panel hell-drive-panel ${hellUnlocked ? "unlocked" : "locked"}`}>
+                    <span className={`boot-drive-light ${hellDiskInserted ? "active" : hellUnlocked ? "available" : ""}`} />
+                    <div ref={hellDriveRef} className={`boot-floppy-drive hell-floppy-drive ${hellDriveStatus}`}>
+                      <span>{!hellUnlocked
+                        ? "LOCKED"
+                        : hellPhase === "ejecting"
+                          ? "EJECTING"
+                          : hellDiskInserted
+                            ? "MEDIA BREACH"
+                            : "INSERT DATA"}</span>
+                      {hellDiskInserted && <i className="boot-inserted-disk hell-inserted-disk" aria-hidden="true" />}
+                    </div>
+                    <div className="boot-drive-footer">
+                      <small>DATA DRIVE</small>
+                      {hellDiskInserted && (
+                        <button
+                          type="button"
+                          className="boot-eject-button hell-eject-button"
+                          onClick={ejectHellDisk}
+                          disabled={["inserting", "ejecting"].includes(hellPhase)}
+                          data-game-sound="custom"
+                        >
+                          EJECT
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
                 <span ref={outputPortRef} className={`machine-output-port ${machinePowered ? "powered" : ""}`} aria-hidden="true">
@@ -591,7 +777,7 @@ export function CampaignMap({
                 <div className="boot-base-diagnostics" aria-hidden="true">
                   <strong>SYS BUS</strong>
                   <span className="boot-base-meter"><i /><i /><i /><i /><i /><i /><i /><i /></span>
-                  <small>{machinePowered ? "RAM 640K OK" : diskInserted ? "READING MEDIA" : "WAITING FOR DISK"}</small>
+                  <small>{hellMode ? "CONTAINMENT FAILED" : machinePowered ? "RAM 640K OK" : diskInserted ? "READING MEDIA" : "WAITING FOR DISK"}</small>
                   <span className="boot-base-vents"><i /><i /><i /><i /><i /></span>
                 </div>
               </div>
@@ -601,8 +787,8 @@ export function CampaignMap({
             <section className="challenge-module-bank" aria-label="Challenge modules">
               <div className="module-bank-header">
                 <div className="module-bank-title">
-                  <span>FILE BUS</span>
-                  <small>RACK 06 // CLEAN ARRAY</small>
+                  <span>{hellMode ? "BREACH BUS" : "FILE BUS"}</span>
+                  <small>{hellMode ? "RACK H6 // CORRUPTED ARRAY" : "RACK 06 // CLEAN ARRAY"}</small>
                 </div>
                 <span className="module-bank-fans" aria-hidden="true"><i /><i /></span>
                 <div className="module-bank-state">
@@ -638,8 +824,14 @@ export function CampaignMap({
                         className={`challenge-module-port ${powered ? "powered" : ""}`}
                         aria-hidden="true"
                       />
-                      <span className="challenge-module-number">FILE {challenge.number}</span>
-                      <strong>{challenge.title}</strong>
+                      <span className="challenge-module-number">{challenge.pack === "hell" ? `H${challenge.number}` : `FILE ${challenge.number}`}</span>
+                      <CorruptedText
+                        as="strong"
+                        active={challenge.pack === "hell"}
+                        reducedEffects={reducedMotion}
+                      >
+                        {challenge.title}
+                      </CorruptedText>
                       <span className="challenge-module-meter" aria-hidden="true"><i /><i /><i /><i /><i /><i /></span>
                       <span className="challenge-module-status">
                         <i aria-hidden="true" />
@@ -666,10 +858,17 @@ export function CampaignMap({
         </section>
         <DesktopJunkPhysics
           bootDiskEnabled={!diskInserted}
+          bootDiskEjectSignal={bootDiskEjectSignal}
           bootDriveRef={driveRef}
+          hellDiskEnabled={hellUnlocked && !hellDiskInserted}
+          hellDiskEjectSignal={hellDiskEjectSignal}
+          hellDriveRef={hellDriveRef}
           onBootDiskInserted={insertBootDisk}
           onBootDiskTrashed={() => showMachineAlert("boot-trash")}
           onBootDriveHotChange={(hot, valid) => setBootDriveStatus(hot ? (valid ? "accepting" : "rejecting") : "")}
+          onHellDiskInserted={insertHellDisk}
+          onHellDiskTrashed={() => showMachineAlert("hell-trash")}
+          onHellDriveHotChange={(hot, valid) => setHellDriveStatus(hot ? (valid ? "accepting" : "rejecting") : "")}
           onWrongDriveFile={(fileName) => showMachineAlert("wrong-disk", fileName)}
           onSound={onSound}
           onClipbitHit={onClipbitHit}
@@ -678,7 +877,7 @@ export function CampaignMap({
 
       <footer className="campaign-taskbar">
         <span>{machinePowered
-          ? `${Object.values(progress.records).filter((record) => record.complete).length}/${challenges.length} files restored`
+          ? `${missions.filter((challenge) => progress.records[challenge.id]?.complete).length}/${missions.length} ${hellMode ? "nightmares contained" : "files restored"}`
           : diskInserted ? "BOOT_SEQUENCE.dsk loaded" : "BOOT DISK required"}</span>
       </footer>
     </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   clampFileToBounds,
   clampThrowVelocity,
@@ -8,6 +8,7 @@ import {
   hasMovingDesktopFiles,
   isFileInRecycleBin,
   isFileNearTarget,
+  releaseFileFromTarget,
   resizeDesktopFiles,
   stepDesktopPhysics,
 } from "./desktopPhysics.js";
@@ -18,6 +19,14 @@ const BOOT_DISK = {
   badge: "BOOT",
   color: "orange",
   kind: "boot-disk",
+};
+
+const HELL_DISK = {
+  id: "hell-campaign-disk",
+  name: "HELL_DISK.dsk",
+  badge: "H6",
+  color: "hell",
+  kind: "hell-disk",
 };
 
 const JUNK_FILES = [
@@ -33,10 +42,17 @@ const BOOT_DRIVE_PADDING = 24;
 
 export function DesktopJunkPhysics({
   bootDiskEnabled = false,
+  bootDiskEjectSignal = 0,
   bootDriveRef,
+  hellDiskEnabled = false,
+  hellDiskEjectSignal = 0,
+  hellDriveRef,
   onBootDiskInserted,
   onBootDiskTrashed,
   onBootDriveHotChange,
+  onHellDiskInserted,
+  onHellDiskTrashed,
+  onHellDriveHotChange,
   onWrongDriveFile,
   onSound,
   onClipbitHit,
@@ -51,17 +67,27 @@ export function DesktopJunkPhysics({
   const dragRef = useRef(null);
   const discardTimeoutsRef = useRef(new Map());
   const bootTrashTimeoutRef = useRef(null);
+  const bootInsertCooldownRef = useRef(0);
+  const hellInsertCooldownRef = useRef(0);
+  const lastBootDiskEjectSignalRef = useRef(bootDiskEjectSignal);
+  const lastHellDiskEjectSignalRef = useRef(hellDiskEjectSignal);
   const driveRejectCooldownRef = useRef(new Map());
   const lastCollisionSoundRef = useRef(0);
   const lastClipbitHitRef = useRef(0);
   const reducedMotionRef = useRef(false);
   const bootDiskEnabledRef = useRef(bootDiskEnabled);
+  const hellDiskEnabledRef = useRef(hellDiskEnabled);
   const bootDriveRefRef = useRef(bootDriveRef);
+  const hellDriveRefRef = useRef(hellDriveRef);
   const bootDriveHotRef = useRef("");
+  const hellDriveHotRef = useRef("");
   const definitionsRef = useRef([]);
   const onBootDiskInsertedRef = useRef(onBootDiskInserted);
   const onBootDiskTrashedRef = useRef(onBootDiskTrashed);
   const onBootDriveHotChangeRef = useRef(onBootDriveHotChange);
+  const onHellDiskInsertedRef = useRef(onHellDiskInserted);
+  const onHellDiskTrashedRef = useRef(onHellDiskTrashed);
+  const onHellDriveHotChangeRef = useRef(onHellDriveHotChange);
   const onWrongDriveFileRef = useRef(onWrongDriveFile);
   const onSoundRef = useRef(onSound);
   const onClipbitHitRef = useRef(onClipbitHit);
@@ -76,10 +102,19 @@ export function DesktopJunkPhysics({
   onBootDiskInsertedRef.current = onBootDiskInserted;
   onBootDiskTrashedRef.current = onBootDiskTrashed;
   onBootDriveHotChangeRef.current = onBootDriveHotChange;
+  onHellDiskInsertedRef.current = onHellDiskInserted;
+  onHellDiskTrashedRef.current = onHellDiskTrashed;
+  onHellDriveHotChangeRef.current = onHellDriveHotChange;
   onWrongDriveFileRef.current = onWrongDriveFile;
   bootDiskEnabledRef.current = bootDiskEnabled;
+  hellDiskEnabledRef.current = hellDiskEnabled;
   bootDriveRefRef.current = bootDriveRef;
-  definitionsRef.current = bootDiskEnabled ? [BOOT_DISK, ...JUNK_FILES] : JUNK_FILES;
+  hellDriveRefRef.current = hellDriveRef;
+  definitionsRef.current = [
+    ...(bootDiskEnabled ? [BOOT_DISK] : []),
+    ...(hellDiskEnabled ? [HELL_DISK] : []),
+    ...JUNK_FILES,
+  ];
 
   useEffect(() => {
     const layer = layerRef.current;
@@ -110,21 +145,98 @@ export function DesktopJunkPhysics({
 
   useEffect(() => {
     if (!boundsRef.current.width || !boundsRef.current.height) return;
-    const hasBootDisk = filesRef.current.some((file) => file.id === BOOT_DISK.id);
-    if (bootDiskEnabled === hasBootDisk) return;
-    if (!bootDiskEnabled) {
-      commitFiles(filesRef.current.filter((file) => file.id !== BOOT_DISK.id));
-      setBootDriveHot(false);
-      return;
-    }
-
     const layout = createDesktopFiles(definitionsRef.current, boundsRef.current, metricsRef.current);
     const existingFiles = new Map(filesRef.current.map((file) => [file.id, file]));
     commitFiles(layout.map((file) => {
       const existing = existingFiles.get(file.id);
       return existing ? { ...existing, width: file.width, height: file.height } : file;
     }));
-  }, [bootDiskEnabled]);
+    if (!bootDiskEnabled) setBootDriveHot(false);
+    if (!hellDiskEnabled) setHellDriveHot(false);
+  }, [bootDiskEnabled, hellDiskEnabled]);
+
+  useEffect(() => {
+    if (
+      !bootDiskEjectSignal
+      || bootDiskEjectSignal === lastBootDiskEjectSignalRef.current
+      || !boundsRef.current.width
+      || !boundsRef.current.height
+    ) return;
+    lastBootDiskEjectSignalRef.current = bootDiskEjectSignal;
+
+    const layoutDisk = createDesktopFiles(
+      [BOOT_DISK],
+      boundsRef.current,
+      metricsRef.current,
+    )[0];
+    const currentDisk = filesRef.current.find((file) => file.id === BOOT_DISK.id);
+    const driveBounds = getBootDriveBounds();
+    const sourceDisk = {
+      ...(currentDisk ?? layoutDisk),
+      discarded: false,
+      discarding: false,
+      pinned: false,
+      dragging: false,
+      sleeping: reducedMotionRef.current,
+      vx: 0,
+      vy: 0,
+      angularVelocity: 0,
+    };
+    const ejectedDisk = releaseFileFromTarget(
+      sourceDisk,
+      driveBounds,
+      boundsRef.current,
+      reducedMotionRef.current,
+    );
+
+    bootInsertCooldownRef.current = performance.now() + 900;
+    commitFiles([
+      ejectedDisk,
+      ...filesRef.current.filter((file) => file.id !== BOOT_DISK.id),
+    ]);
+    ensureAnimation();
+  }, [bootDiskEjectSignal]);
+
+  useEffect(() => {
+    if (
+      !hellDiskEjectSignal
+      || hellDiskEjectSignal === lastHellDiskEjectSignalRef.current
+      || !boundsRef.current.width
+      || !boundsRef.current.height
+    ) return;
+    lastHellDiskEjectSignalRef.current = hellDiskEjectSignal;
+
+    const layoutDisk = createDesktopFiles(
+      [HELL_DISK],
+      boundsRef.current,
+      metricsRef.current,
+    )[0];
+    const currentDisk = filesRef.current.find((file) => file.id === HELL_DISK.id);
+    const sourceDisk = {
+      ...(currentDisk ?? layoutDisk),
+      discarded: false,
+      discarding: false,
+      pinned: false,
+      dragging: false,
+      sleeping: reducedMotionRef.current,
+      vx: 0,
+      vy: 0,
+      angularVelocity: 0,
+    };
+    const ejectedDisk = releaseFileFromTarget(
+      sourceDisk,
+      getHellDriveBounds(),
+      boundsRef.current,
+      reducedMotionRef.current,
+    );
+
+    hellInsertCooldownRef.current = performance.now() + 900;
+    commitFiles([
+      ejectedDisk,
+      ...filesRef.current.filter((file) => file.id !== HELL_DISK.id),
+    ]);
+    ensureAnimation();
+  }, [hellDiskEjectSignal]);
 
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -194,20 +306,46 @@ export function DesktopJunkPhysics({
     const flyingBootDisk = bootDiskEnabledRef.current
       ? nextFiles.find((file) => file.id === BOOT_DISK.id && file.id !== draggedId)
       : null;
-    if (flyingBootDisk && isFileNearTarget(flyingBootDisk, getBootDriveBounds(), BOOT_DRIVE_PADDING)) {
+    if (
+      flyingBootDisk
+      && performance.now() >= bootInsertCooldownRef.current
+      && isFileNearTarget(flyingBootDisk, getBootDriveBounds(), BOOT_DRIVE_PADDING)
+    ) {
       insertBootDisk(nextFiles);
       return;
     }
-    const driveBounds = getBootDriveBounds();
+    const flyingHellDisk = hellDiskEnabledRef.current
+      ? nextFiles.find((file) => file.id === HELL_DISK.id && file.id !== draggedId)
+      : null;
+    if (
+      flyingHellDisk
+      && performance.now() >= hellInsertCooldownRef.current
+      && isFileNearTarget(flyingHellDisk, getHellDriveBounds(), BOOT_DRIVE_PADDING)
+    ) {
+      insertHellDisk(nextFiles);
+      return;
+    }
+    const bootDriveBounds = getBootDriveBounds();
+    const hellDriveBounds = getHellDriveBounds();
     const now = performance.now();
-    const wrongDriveFile = nextFiles.find((file) => (
+    const wrongBootDriveFile = nextFiles.find((file) => (
       file.id !== BOOT_DISK.id
       && file.id !== draggedId
       && (driveRejectCooldownRef.current.get(file.id) ?? 0) <= now
-      && isFileNearTarget(file, driveBounds, BOOT_DRIVE_PADDING)
+      && isFileNearTarget(file, bootDriveBounds, BOOT_DRIVE_PADDING)
     ));
-    if (wrongDriveFile) {
-      rejectWrongDriveFile(wrongDriveFile, nextFiles, driveBounds);
+    if (wrongBootDriveFile) {
+      rejectWrongDriveFile(wrongBootDriveFile, nextFiles, bootDriveBounds, "boot");
+      return;
+    }
+    const wrongHellDriveFile = nextFiles.find((file) => (
+      file.id !== HELL_DISK.id
+      && file.id !== draggedId
+      && (driveRejectCooldownRef.current.get(file.id) ?? 0) <= now
+      && isFileNearTarget(file, hellDriveBounds, BOOT_DRIVE_PADDING)
+    ));
+    if (wrongHellDriveFile) {
+      rejectWrongDriveFile(wrongHellDriveFile, nextFiles, hellDriveBounds, "hell");
       return;
     }
     const hitClipbit = nextFiles.some((file) => {
@@ -248,6 +386,10 @@ export function DesktopJunkPhysics({
     return getElementBounds(bootDriveRefRef.current?.current);
   }
 
+  function getHellDriveBounds() {
+    return getElementBounds(hellDriveRefRef.current?.current);
+  }
+
   function getElementBounds(element) {
     const layer = layerRef.current;
     if (!layer || !element) return null;
@@ -268,6 +410,13 @@ export function DesktopJunkPhysics({
     onBootDriveHotChangeRef.current?.(Boolean(hot), Boolean(valid));
   }
 
+  function setHellDriveHot(hot, valid = true) {
+    const nextState = hot ? (valid ? "valid" : "invalid") : "";
+    if (hellDriveHotRef.current === nextState) return;
+    hellDriveHotRef.current = nextState;
+    onHellDriveHotChangeRef.current?.(Boolean(hot), Boolean(valid));
+  }
+
   function insertBootDisk(sourceFiles = filesRef.current) {
     const disk = sourceFiles.find((file) => file.id === BOOT_DISK.id);
     if (!disk || disk.discarded || disk.discarding) return;
@@ -283,12 +432,33 @@ export function DesktopJunkPhysics({
     onBootDiskInsertedRef.current?.();
   }
 
-  function rejectWrongDriveFile(file, sourceFiles = filesRef.current, driveBounds = getBootDriveBounds()) {
+  function insertHellDisk(sourceFiles = filesRef.current) {
+    const disk = sourceFiles.find((file) => file.id === HELL_DISK.id);
+    if (!disk || disk.discarded || disk.discarding) return;
+    dragRef.current = null;
+    setBinHot(false);
+    setHellDriveHot(false);
+    commitFiles(sourceFiles.map((file) => (
+      file.id === HELL_DISK.id
+        ? { ...file, discarded: true, dragging: false, vx: 0, vy: 0, angularVelocity: 0, sleeping: true }
+        : file
+    )));
+    playSound("hellInsert");
+    onHellDiskInsertedRef.current?.();
+  }
+
+  function rejectWrongDriveFile(
+    file,
+    sourceFiles = filesRef.current,
+    driveBounds = getBootDriveBounds(),
+    drive = "boot",
+  ) {
     if (!file || !driveBounds) return;
     driveRejectCooldownRef.current.set(file.id, performance.now() + 650);
     const ejected = ejectFileFromTarget(file, driveBounds);
     commitFiles(sourceFiles.map((item) => item.id === file.id ? ejected : item));
-    setBootDriveHot(false);
+    if (drive === "hell") setHellDriveHot(false);
+    else setBootDriveHot(false);
     playSound("driveReject");
     onWrongDriveFileRef.current?.(file.name);
     ensureAnimation();
@@ -309,15 +479,17 @@ export function DesktopJunkPhysics({
     commitFiles(nextFiles);
     setBinHot(false);
     const trashedBootDisk = newIds.includes(BOOT_DISK.id);
-    if (trashedBootDisk) {
+    const trashedHellDisk = newIds.includes(HELL_DISK.id);
+    if (trashedBootDisk || trashedHellDisk) {
       setBootTrashPanic(true);
       if (bootTrashTimeoutRef.current) window.clearTimeout(bootTrashTimeoutRef.current);
       bootTrashTimeoutRef.current = window.setTimeout(() => {
         setBootTrashPanic(false);
         bootTrashTimeoutRef.current = null;
       }, 1100);
-      playSound("bootTrash");
-      onBootDiskTrashedRef.current?.();
+      playSound(trashedHellDisk ? "hellTrash" : "bootTrash");
+      if (trashedBootDisk) onBootDiskTrashedRef.current?.();
+      if (trashedHellDisk) onHellDiskTrashedRef.current?.();
     } else {
       playSound("paperTrash");
     }
@@ -340,6 +512,7 @@ export function DesktopJunkPhysics({
     dragRef.current = null;
     setBinHot(false);
     setBootDriveHot(false);
+    setHellDriveHot(false);
     setBootTrashPanic(false);
     if (bootTrashTimeoutRef.current) window.clearTimeout(bootTrashTimeoutRef.current);
     bootTrashTimeoutRef.current = null;
@@ -373,7 +546,7 @@ export function DesktopJunkPhysics({
         ? { ...item, pinned: false, dragging: true, sleeping: false, vx: 0, vy: 0, angularVelocity: 0 }
         : item
     )));
-    playSound(file.id === BOOT_DISK.id ? "floppyPickup" : "paperPickup");
+    playSound(isRemovableDisk(file) ? "floppyPickup" : "paperPickup");
     ensureAnimation();
   }
 
@@ -400,9 +573,11 @@ export function DesktopJunkPhysics({
     moved.dragging = true;
     drag.lastTime = now;
     commitFiles(filesRef.current.map((file) => file.id === drag.id ? moved : file));
-    const driveHot = isFileNearTarget(moved, getBootDriveBounds(), BOOT_DRIVE_PADDING);
-    setBootDriveHot(driveHot, moved.id === BOOT_DISK.id);
-    setBinHot(!driveHot && isFileInRecycleBin(moved, getBinBounds()));
+    const bootDriveHot = isFileNearTarget(moved, getBootDriveBounds(), BOOT_DRIVE_PADDING);
+    const hellDriveHot = isFileNearTarget(moved, getHellDriveBounds(), BOOT_DRIVE_PADDING);
+    setBootDriveHot(bootDriveHot, moved.id === BOOT_DISK.id);
+    setHellDriveHot(hellDriveHot, moved.id === HELL_DISK.id);
+    setBinHot(!bootDriveHot && !hellDriveHot && isFileInRecycleBin(moved, getBinBounds()));
     ensureAnimation();
   }
 
@@ -416,10 +591,12 @@ export function DesktopJunkPhysics({
     dragRef.current = null;
     setBinHot(false);
     setBootDriveHot(false);
+    setHellDriveHot(false);
     if (!current) return;
     if (
       allowRecycle
       && current.id === BOOT_DISK.id
+      && performance.now() >= bootInsertCooldownRef.current
       && isFileNearTarget(current, getBootDriveBounds(), BOOT_DRIVE_PADDING)
     ) {
       insertBootDisk();
@@ -430,7 +607,24 @@ export function DesktopJunkPhysics({
       && current.id !== BOOT_DISK.id
       && isFileNearTarget(current, getBootDriveBounds(), BOOT_DRIVE_PADDING)
     ) {
-      rejectWrongDriveFile(current);
+      rejectWrongDriveFile(current, filesRef.current, getBootDriveBounds(), "boot");
+      return;
+    }
+    if (
+      allowRecycle
+      && current.id === HELL_DISK.id
+      && performance.now() >= hellInsertCooldownRef.current
+      && isFileNearTarget(current, getHellDriveBounds(), BOOT_DRIVE_PADDING)
+    ) {
+      insertHellDisk();
+      return;
+    }
+    if (
+      allowRecycle
+      && current.id !== HELL_DISK.id
+      && isFileNearTarget(current, getHellDriveBounds(), BOOT_DRIVE_PADDING)
+    ) {
+      rejectWrongDriveFile(current, filesRef.current, getHellDriveBounds(), "hell");
       return;
     }
     if (allowRecycle && isFileInRecycleBin(current, getBinBounds())) {
@@ -469,6 +663,11 @@ export function DesktopJunkPhysics({
       insertBootDisk();
       return;
     }
+    if (file.id === HELL_DISK.id && event.key === "Enter") {
+      event.preventDefault();
+      insertHellDisk();
+      return;
+    }
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       const direction = definitionsRef.current.findIndex((item) => item.id === fileId) % 2 ? -1 : 1;
@@ -476,7 +675,7 @@ export function DesktopJunkPhysics({
         ? clampFileToBounds({ ...file, pinned: false, x: file.x + direction * 24, y: file.y - 24 }, boundsRef.current)
         : { ...file, pinned: false, vx: direction * 520, vy: -760, angularVelocity: direction * 180, sleeping: false };
       commitFiles(filesRef.current.map((item) => item.id === fileId ? tossed : item));
-      playSound(file.id === BOOT_DISK.id ? "floppyDrop" : "paperThrow");
+      playSound(isRemovableDisk(file) ? "floppyDrop" : "paperThrow");
       ensureAnimation();
       return;
     }
@@ -499,10 +698,16 @@ export function DesktopJunkPhysics({
       vy: 0,
     }, boundsRef.current);
     commitFiles(filesRef.current.map((item) => item.id === fileId ? moved : item));
-    const driveHot = isFileNearTarget(moved, getBootDriveBounds(), BOOT_DRIVE_PADDING);
-    setBootDriveHot(driveHot, moved.id === BOOT_DISK.id);
-    setBinHot(!driveHot && isFileInRecycleBin(moved, getBinBounds()));
-    if (driveHot && moved.id !== BOOT_DISK.id) rejectWrongDriveFile(moved);
+    const bootDriveHot = isFileNearTarget(moved, getBootDriveBounds(), BOOT_DRIVE_PADDING);
+    const hellDriveHot = isFileNearTarget(moved, getHellDriveBounds(), BOOT_DRIVE_PADDING);
+    setBootDriveHot(bootDriveHot, moved.id === BOOT_DISK.id);
+    setHellDriveHot(hellDriveHot, moved.id === HELL_DISK.id);
+    setBinHot(!bootDriveHot && !hellDriveHot && isFileInRecycleBin(moved, getBinBounds()));
+    if (bootDriveHot && moved.id !== BOOT_DISK.id) {
+      rejectWrongDriveFile(moved, filesRef.current, getBootDriveBounds(), "boot");
+    } else if (hellDriveHot && moved.id !== HELL_DISK.id) {
+      rejectWrongDriveFile(moved, filesRef.current, getHellDriveBounds(), "hell");
+    }
   }
 
   const removedCount = files.filter((file) => file.discarded || file.discarding).length;
@@ -536,18 +741,18 @@ export function DesktopJunkPhysics({
           onKeyDown={(event) => handleFileKeyDown(event, file.id)}
           data-game-sound="custom"
           title={file.name}
-          aria-label={file.id === BOOT_DISK.id
-            ? `${file.name}, drag or throw it into the computer drive, press Enter to insert, or press Delete to recycle`
+          aria-label={isRemovableDisk(file)
+            ? `${file.name}, drag or throw it into its computer drive, press Enter to insert, or press Delete to recycle`
             : `${file.name}, drag to throw or press Delete to recycle`}
         >
-          <span className={`desktop-junk-visual ${file.id === BOOT_DISK.id ? "desktop-boot-disk-visual" : ""}`}>
+          <span className={`desktop-junk-visual ${isRemovableDisk(file) ? "desktop-boot-disk-visual" : ""} ${file.id === HELL_DISK.id ? "desktop-hell-disk-visual" : ""}`}>
             {file.pinned && <span className="desktop-junk-pin" aria-hidden="true" />}
-            {file.id === BOOT_DISK.id
+            {isRemovableDisk(file)
               ? <span className="desktop-boot-disk-shutter" aria-hidden="true" />
               : <span className="desktop-junk-fold" aria-hidden="true" />}
             <strong>{file.badge}</strong>
             <small>{file.name}</small>
-            {file.id === BOOT_DISK.id && <i className="desktop-boot-disk-notch" aria-hidden="true" />}
+            {isRemovableDisk(file) && <i className="desktop-boot-disk-notch" aria-hidden="true" />}
           </span>
         </button>
       ))}
@@ -572,4 +777,8 @@ export function DesktopJunkPhysics({
       </span>
     </div>
   );
+}
+
+function isRemovableDisk(file) {
+  return file?.id === BOOT_DISK.id || file?.id === HELL_DISK.id;
 }

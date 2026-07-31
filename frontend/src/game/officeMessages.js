@@ -15,7 +15,7 @@ export function getOfficeMessage(office, kind, turn = 0, context = {}) {
   };
 }
 
-export function interpolateOfficeText(text, context = {}) {
+function interpolateOfficeText(text, context = {}) {
   return String(text).replace(/\{\{(\w+)\}\}/g, (match, key) => (
     context[key] == null ? match : String(context[key])
   ));

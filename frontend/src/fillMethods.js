@@ -1,6 +1,6 @@
 export const ALL_ISSUE_COLUMNS = "__all_issue_columns__";
 
-export const FILL_METHODS = [
+const FILL_METHODS = [
   { id: "custom", label: "Custom value", description: "Replace every target with anything you enter.", usesCustomValue: true },
   { id: "customDate", label: "Custom date", description: "Pick one date and use it for every target.", types: ["Date"], usesCustomValue: true },
   { id: "mode", label: "Most common value", description: "Use the most common valid value, optionally within groups.", types: ["Text", "Category", "Boolean"], supportsGrouping: true },

@@ -236,14 +236,6 @@ export function validateSchemaOperation(columns, operation) {
   return invalidPlan("Unsupported column operation.");
 }
 
-export function getSchemaRecipeDependencies(step) {
-  if (step.type === "createColumn") return { inputs: [], outputs: [step.column] };
-  if (step.type === "deleteColumns") return { inputs: step.columns ?? [], outputs: [] };
-  if (step.type === "splitColumn") return { inputs: [step.sourceColumn], outputs: step.outputColumns };
-  if (step.type === "combineColumns") return { inputs: step.sourceColumns, outputs: [step.outputColumn] };
-  return { inputs: [], outputs: [] };
-}
-
 export function mergeVisibleColumnOrder(columns, visibleColumnOrder) {
   const visibleSet = new Set(visibleColumnOrder);
   const knownVisible = visibleColumnOrder.filter((column) => columns.includes(column));

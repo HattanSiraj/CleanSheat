@@ -82,7 +82,9 @@ test("rapid repeated feedback replaces the active copy instead of building a bac
 
 test("scan feedback reports clean passes issues objectives combos and wins", () => {
   assert.equal(createScanFeedback({ issueCount: 0 }, { id: "clean" }).kind, "scan-clean");
-  assert.equal(createScanFeedback({ issueCount: 8 }, { id: "bad" }).kind, "scan-error");
+  const scanError = createScanFeedback({ issueCount: 8 }, { id: "bad" });
+  assert.equal(scanError.kind, "scan-error");
+  assert.equal(scanError.duration, 4000);
   assert.equal(createScanFeedback({ issueCount: 0, challenge: true, corruption: 80 }, { id: "hidden" }).kind, "scan-clean");
   assert.equal(createScanFeedback({ issueCount: 2, objectiveIds: ["one"] }, { id: "visible-first" }).kind, "scan-error");
   assert.equal(createScanFeedback({ objectiveIds: ["one"], objectiveTitles: ["Fix dates"] }, { id: "objective" }).kind, "objective");

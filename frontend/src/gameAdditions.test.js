@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CHALLENGES } from "./challengeData.js";
-import { buildDataHealthMap, getHealthCellLabel } from "./game/dataHealth.js";
+import { buildDataHealthMap, formatHealthPercentage, getHealthCellLabel } from "./game/dataHealth.js";
 import {
   OFFICE_CHAT_POSITION_KEY,
   clampOfficePosition,
@@ -22,6 +22,9 @@ test("data health maps stay bounded for huge datasets", () => {
   assert.equal(map.columnBandCount, 40);
   assert.equal(map.cells.length, 800);
   assert.equal(map.cells.at(-1).issueCount, 1);
+  assert.equal(map.cells.at(-1).healthPercentage, 100 - (100 / 150_000));
+  assert.equal(map.columns.at(-1).healthPercentage, 99.9999);
+  assert.equal(formatHealthPercentage(map.columns.at(-1).healthPercentage), "99.9999%");
   assert.equal(map.cells.at(-1).firstIssue.rowId, "last");
 });
 
@@ -45,6 +48,9 @@ test("data health maps group real row and column ranges", () => {
   assert.equal(map.cells.reduce((total, cell) => total + cell.issueCount, 0), 2);
   assert.match(getHealthCellLabel(map.cells[3], columns), /Rows 51 to 100/);
   assert.match(getHealthCellLabel(map.cells[3], columns), /Email to Phone/);
+  assert.equal(map.columns[2].issueCount, 1);
+  assert.equal(map.columns[2].healthPercentage, 99);
+  assert.equal(formatHealthPercentage(map.columns[2].healthPercentage), "99%");
 });
 
 test("office messages rotate and insert scan details", () => {

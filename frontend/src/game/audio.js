@@ -1,4 +1,4 @@
-export const AUDIO_STORAGE_KEY = "cleansheet.game-audio";
+const AUDIO_STORAGE_KEY = "cleansheet.game-audio";
 
 let audioContext = null;
 
@@ -142,6 +142,31 @@ const SOUND_SEQUENCES = {
   machinePower: [
     { frequency: 190, endFrequency: 410, duration: 0.08, type: "sawtooth", volume: 0.035 },
     { frequency: 680, delay: 0.07, duration: 0.045, type: "square", volume: 0.04 },
+  ],
+  hellInsert: [
+    { frequency: 180, endFrequency: 55, duration: 0.5, type: "sawtooth", volume: 0.07 },
+    { frequency: 920, endFrequency: 110, delay: 0.18, duration: 0.42, type: "square", volume: 0.045 },
+    { frequency: 74, delay: 0.45, duration: 0.55, type: "sawtooth", volume: 0.065 },
+  ],
+  hellBreach: [
+    { frequency: 1200, endFrequency: 90, duration: 0.58, type: "sawtooth", volume: 0.065 },
+    { frequency: 66, delay: 0.12, duration: 0.7, type: "square", volume: 0.055 },
+    { frequency: 740, endFrequency: 160, delay: 0.52, duration: 0.3, type: "square", volume: 0.045 },
+  ],
+  hellEject: [
+    { frequency: 90, endFrequency: 560, duration: 0.3, type: "sawtooth", volume: 0.05 },
+    { frequency: 620, endFrequency: 180, delay: 0.28, duration: 0.2, type: "square", volume: 0.045 },
+  ],
+  hellContained: [
+    { frequency: 58, endFrequency: 42, duration: 0.85, type: "sawtooth", volume: 0.065 },
+    { frequency: 1080, endFrequency: 160, delay: 0.2, duration: 0.72, type: "square", volume: 0.045 },
+    { frequency: 260, endFrequency: 780, delay: 0.82, duration: 0.34, type: "square", volume: 0.05 },
+    { frequency: 520, delay: 1.08, duration: 0.08, type: "square", volume: 0.04 },
+  ],
+  hellTrash: [
+    { frequency: 980, endFrequency: 70, duration: 0.5, type: "sawtooth", volume: 0.07 },
+    { frequency: 65, delay: 0.2, duration: 0.62, type: "square", volume: 0.06 },
+    { frequency: 1300, delay: 0.58, duration: 0.07, type: "square", volume: 0.045 },
   ],
   open: [
     { frequency: 220, duration: 0.05 },

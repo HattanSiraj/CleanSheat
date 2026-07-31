@@ -1,8 +1,8 @@
 import { GRADE_ORDER, isBetterResult } from "./scoring.js";
 
 export const GAME_PROGRESS_KEY = "cleansheet.game-progress";
-export const GAME_PROGRESS_VERSION = 1;
-export const ACHIEVEMENT_RULES_VERSION = 2;
+const GAME_PROGRESS_VERSION = 1;
+const ACHIEVEMENT_RULES_VERSION = 2;
 
 export function createGameProgress() {
   return {

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const RAGE_CLICK_COUNT = 7;
 const RAGE_CLICK_WINDOW = 2500;
@@ -9,6 +9,8 @@ export function Clipbit({
   mood = "idle",
   minimized = false,
   campaign = false,
+  hell = false,
+  reducedEffects = false,
   onToggle,
   onMinimize,
   onPester,
@@ -32,11 +34,12 @@ export function Clipbit({
   const mouthPath = {
     happy: "M55 72q12 12 24 0",
     worried: "M55 80q12-12 24 0",
+    terrified: "M58 73h18v10H58z",
     angry: "M53 75h30v9H53zM60 75v9M68 75v9M76 75v9",
   }[visibleMood] ?? "M55 75h24";
 
   useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return undefined;
+    if (reducedEffects || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return undefined;
     let glitchTimeout;
     const glitchInterval = window.setInterval(() => {
       setGlitching(true);
@@ -46,7 +49,7 @@ export function Clipbit({
       window.clearInterval(glitchInterval);
       if (glitchTimeout) window.clearTimeout(glitchTimeout);
     };
-  }, []);
+  }, [reducedEffects]);
 
   useEffect(() => () => {
     if (breakTimeoutRef.current) window.clearTimeout(breakTimeoutRef.current);
@@ -65,7 +68,7 @@ export function Clipbit({
     setAngry(true);
     setBreaking(true);
     if (notifyParent) onRage?.();
-    const breakDuration = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    const breakDuration = reducedEffects || window.matchMedia("(prefers-reduced-motion: reduce)").matches
       ? 50
       : BREAK_DURATION;
     breakTimeoutRef.current = window.setTimeout(() => {
@@ -97,7 +100,7 @@ export function Clipbit({
   }
 
   return (
-    <aside className={`clipbit ${minimized ? "minimized" : ""} ${campaign ? "campaign-mode" : ""} ${glitching ? "glitching" : ""} ${breaking ? "breaking" : ""}`} aria-live="polite">
+    <aside className={`clipbit ${minimized ? "minimized" : ""} ${campaign ? "campaign-mode" : ""} ${hell ? "hell-mode" : ""} ${glitching ? "glitching" : ""} ${breaking ? "breaking" : ""}`} aria-live="polite">
       {!minimized && message && (
         <div className="clipbit-bubble">
           <button type="button" className="clipbit-minimize" onClick={onToggle} aria-label="Minimize Clipbit">x</button>

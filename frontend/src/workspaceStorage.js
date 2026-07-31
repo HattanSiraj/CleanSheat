@@ -1,8 +1,36 @@
 const DATABASE_NAME = "cleansheet-workspaces";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const STORE_NAME = "workspaces";
+const STORAGE_VERSION_KEY = "cleansheet.storage-version";
+const STORAGE_VERSION = "2";
+let saveQueue = Promise.resolve();
 
-export async function saveWorkspace(workspaceId, snapshot) {
+export async function initializeCleanSheetStorage(storage = window.localStorage, indexedDB = window.indexedDB) {
+  if (storage.getItem(STORAGE_VERSION_KEY) === STORAGE_VERSION) return false;
+  for (const key of getCleanSheetStorageKeys(storage)) storage.removeItem(key);
+  await deleteCleanSheetDatabase(indexedDB);
+  storage.setItem(STORAGE_VERSION_KEY, STORAGE_VERSION);
+  return true;
+}
+
+export function getCleanSheetStorageKeys(storage) {
+  const keys = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key?.startsWith("cleansheet.")) keys.push(key);
+  }
+  return keys;
+}
+
+export function saveWorkspace(workspaceId, snapshot) {
+  const nextSave = saveQueue
+    .catch(() => {})
+    .then(() => saveWorkspaceNow(workspaceId, snapshot));
+  saveQueue = nextSave;
+  return nextSave;
+}
+
+async function saveWorkspaceNow(workspaceId, snapshot) {
   const database = await openDatabase();
   await runRequest(database, "readwrite", (store) => store.put({
     id: workspaceId,
@@ -22,12 +50,6 @@ export async function deleteWorkspace(workspaceId) {
   await runRequest(database, "readwrite", (store) => store.delete(workspaceId));
 }
 
-export async function listWorkspaceIds() {
-  const database = await openDatabase();
-  const records = await runRequest(database, "readonly", (store) => store.getAllKeys());
-  return records.map(String);
-}
-
 function openDatabase() {
   return new Promise((resolve, reject) => {
     const request = window.indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
@@ -38,6 +60,15 @@ function openDatabase() {
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error("Could not open browser storage."));
+  });
+}
+
+function deleteCleanSheetDatabase(indexedDB) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(DATABASE_NAME);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error ?? new Error("Could not reset browser storage."));
+    request.onblocked = () => reject(new Error("Close other CleanSheet tabs before resetting browser storage."));
   });
 }
 

@@ -1,6 +1,6 @@
-export const DESKTOP_FILE_WIDTH = 58;
-export const DESKTOP_FILE_HEIGHT = 70;
-export const MAX_THROW_SPEED = 1500;
+const DESKTOP_FILE_WIDTH = 58;
+const DESKTOP_FILE_HEIGHT = 70;
+const MAX_THROW_SPEED = 1500;
 
 const DESKTOP_SCALE_BASE_WIDTH = 1920;
 const DESKTOP_SCALE_BASE_HEIGHT = 1080;
@@ -191,6 +191,34 @@ export function ejectFileFromTarget(file, targetBounds) {
   };
 }
 
+export function releaseFileFromTarget(file, targetBounds, bounds, reducedMotion = false) {
+  if (!file) return file;
+  const positioned = targetBounds
+    ? clampFileToBounds({
+        ...file,
+        x: reducedMotion
+          ? targetBounds.x - file.width - 18
+          : targetBounds.x + targetBounds.width / 2 - file.width / 2,
+        y: targetBounds.y - file.height * 0.35,
+        pinned: false,
+        dragging: false,
+        sleeping: reducedMotion,
+        vx: 0,
+        vy: 0,
+        angularVelocity: 0,
+      }, bounds)
+    : clampFileToBounds({
+        ...file,
+        pinned: false,
+        dragging: false,
+        sleeping: true,
+        vx: 0,
+        vy: 0,
+        angularVelocity: 0,
+      }, bounds);
+  return reducedMotion || !targetBounds ? positioned : ejectFileFromTarget(positioned, targetBounds);
+}
+
 export function hasMovingDesktopFiles(files, draggedId = "") {
   return files.some((file) => (
     isActive(file)
@@ -249,16 +277,14 @@ function resolveFileCollision(left, right, draggedId) {
   const inverseMassTotal = leftInverseMass + rightInverseMass;
   if (inverseMassTotal === 0) return 0;
 
-  let normalX = 0;
-  let normalY = 0;
-  let penetration = 0;
-  if (overlapX < overlapY) {
-    normalX = left.x + left.width / 2 < right.x + right.width / 2 ? 1 : -1;
-    penetration = overlapX;
-  } else {
-    normalY = left.y + left.height / 2 < right.y + right.height / 2 ? 1 : -1;
-    penetration = overlapY;
-  }
+  const horizontalCollision = overlapX < overlapY;
+  const normalX = horizontalCollision
+    ? left.x + left.width / 2 < right.x + right.width / 2 ? 1 : -1
+    : 0;
+  const normalY = horizontalCollision
+    ? 0
+    : left.y + left.height / 2 < right.y + right.height / 2 ? 1 : -1;
+  const penetration = horizontalCollision ? overlapX : overlapY;
 
   const correction = penetration / inverseMassTotal;
   left.x -= normalX * correction * leftInverseMass;
