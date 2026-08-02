@@ -499,6 +499,33 @@ test("group recovery can compare numeric values without treating decimal formatt
   }).complete, false);
 });
 
+test("group recovery ignores rows that have no usable group value", () => {
+  const priceByItem = {
+    kind: "groupConsistencyRecovery",
+    column: "Price",
+    groupBy: "Item",
+    valueType: "Number",
+    minimumGroups: 1,
+  };
+  const itemByPrice = {
+    kind: "groupConsistencyRecovery",
+    column: "Item",
+    groupBy: "Price",
+    groupType: "Number",
+    minimumGroups: 1,
+  };
+  const rows = [
+    { Item: "Cake", Price: "3.0" },
+    { Item: "", Price: "" },
+    { Item: "", Price: "ERROR" },
+  ];
+  assert.equal(evaluateObjective(priceByItem, { rows }).complete, true);
+  assert.equal(evaluateObjective(itemByPrice, { rows }).complete, true);
+  assert.equal(evaluateObjective(priceByItem, {
+    rows: [...rows, { Item: "Cake", Price: "ERROR" }],
+  }).complete, false);
+});
+
 test("export schema objectives check the transforms formats and exact column order", () => {
   const objective = {
     kind: "exportSchema",
@@ -742,17 +769,17 @@ test("Boot 0.5C can be completed without throwing away recoverable rows", () => 
         lookupChanges.push({ rowId: row.__rowId, column: "Item" });
         changed += 1;
       }
-      if (quantity !== null && price !== null && (total === null || Math.abs(total - quantity * price) > 0.01)) {
+      if (quantity !== null && price !== null && total === null) {
         row["Total Spent"] = (quantity * price).toFixed(2);
         total = Number(row["Total Spent"]);
         changed += 1;
       }
-      if (total !== null && price !== null && price !== 0 && (quantity === null || Math.abs(quantity - total / price) > 0.01)) {
+      if (total !== null && price !== null && price !== 0 && quantity === null) {
         row.Quantity = (total / price).toFixed(2);
         quantity = Number(row.Quantity);
         changed += 1;
       }
-      if (total !== null && quantity !== null && quantity !== 0 && (price === null || Math.abs(price - total / quantity) > 0.01)) {
+      if (total !== null && quantity !== null && quantity !== 0 && price === null) {
         row["Price Per Unit"] = (total / quantity).toFixed(2);
         changed += 1;
       }

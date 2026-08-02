@@ -469,10 +469,10 @@ function evaluateGroupConsistencyRecovery(objective, rows) {
   const groups = new Map();
   let missing = 0;
   for (const row of rows) {
-    const value = normalizeConsistencyValue(row[objective.column], objective.valueType);
-    if (!value) missing += 1;
     const group = normalizeConsistencyValue(row[objective.groupBy], objective.groupType);
     if (!group || !matchesGroupSelector(group, objective.selector)) continue;
+    const value = normalizeConsistencyValue(row[objective.column], objective.valueType);
+    if (!value) missing += 1;
     const values = groups.get(group) ?? new Set();
     if (value) values.add(value);
     groups.set(group, values);
@@ -496,7 +496,7 @@ function normalizeConsistencyValue(value, type) {
   const text = String(value ?? "").trim();
   if (type !== "Number" || !text) return text;
   const numeric = toNumber(text);
-  return numeric === null ? text : String(numeric);
+  return numeric === null ? "" : String(numeric);
 }
 
 function consistencyValuesDisagree(values, type, tolerance = 0) {

@@ -1108,6 +1108,15 @@ select option:checked {
   padding-bottom: 0.15rem;
 }
 
+.relationship-results .relationship-cycle-notice {
+  background: #fff0d2;
+  border-left: 4px solid var(--color-orange-bright);
+  color: #74380f;
+  font-weight: 700;
+  margin-top: 0.55rem;
+  padding: 0.55rem 0.65rem;
+}
+
 .formula-token-picker {
   display: flex;
   flex-wrap: wrap;

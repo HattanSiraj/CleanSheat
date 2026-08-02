@@ -307,7 +307,7 @@ const CORE_CHALLENGES = [
       { id: "boot-one-price-per-item", title: "Keep one price for every Item", kind: "groupConsistencyRecovery", column: "Price Per Unit", groupBy: "Item", valueType: "Number", tolerance: 0.01, minimumGroups: 8 },
       { id: "boot-one-item-per-price", title: "Keep one Item for every price", kind: "groupConsistencyRecovery", column: "Item", groupBy: "Price Per Unit", groupType: "Number", minimumGroups: 8 },
       { id: "boot-numbers", title: "Clean the three number columns", kind: "scanClean", columns: ["Quantity", "Price Per Unit", "Total Spent"], expectedTypes: { Quantity: "Number", "Price Per Unit": "Number", "Total Spent": "Number" } },
-      { id: "boot-formula", title: "Make every total add up", kind: "formula", left: "Quantity", right: "Price Per Unit", target: "Total Spent", operator: "*", tolerance: 0.01 },
+      { id: "boot-formula", title: "Make every total add up", kind: "formula", left: "Quantity", right: "Price Per Unit", target: "Total Spent", operator: "*", tolerance: 0.02 },
       { id: "boot-dates", title: "Clean every transaction date", kind: "patternMatch", column: "Transaction Date", expectedType: "Date", pattern: "^\\d{4}-\\d{2}-\\d{2}$", allowBlank: true, requireAllowedMissingWhenBlank: true },
     ],
     rules: [

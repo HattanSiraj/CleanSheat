@@ -40,6 +40,7 @@ import {
 } from "./lookupEngine.js";
 import { LookupValuePreview } from "./LookupValuePreview.jsx";
 import { evaluateFormula, formatFormulaNumber, parseFormula, parseFormulaNumber } from "./formulaEngine.js";
+import { getCircularFormulaRuleIds } from "./relationshipSafety.js";
 import { CHALLENGES, getChallenge, hasCurrentChallengeRevision } from "./challengeData.js";
 import { evaluateChallengeInChunks } from "./challengeEngine.js";
 import { deleteWorkspace, loadWorkspace, saveWorkspace } from "./workspaceStorage.js";
@@ -339,6 +340,7 @@ export function App() {
   const [lookupPreview, setLookupPreview] = useState(null);
   const [lookupFinder, setLookupFinder] = useState(null);
   const [lookupAnalysisProgress, setLookupAnalysisProgress] = useState(null);
+  const [relationshipCheckNotice, setRelationshipCheckNotice] = useState("");
   const [isRelationshipPanelOpen, setIsRelationshipPanelOpen] = useState(false);
   const [findReplaceDraft, setFindReplaceDraft] = useState({ find: "", replace: "", mode: "exact", caseSensitive: true });
   const [fillDraft, setFillDraft] = useState(EMPTY_FILL_DRAFT);
@@ -1107,6 +1109,7 @@ export function App() {
     setHasUnscannedChanges(true);
     setIsValidationPanelOpen(false);
     setRelationshipIssues([]);
+    setRelationshipCheckNotice("");
     setSelectedRelationshipFixes([]);
     setHistory({ past: [], future: [] });
     setShowIssueRowsOnly(false);
@@ -1476,6 +1479,7 @@ export function App() {
     setIsValidationPanelOpen(false);
     setColumnConversionNotice("");
     setRelationshipIssues([]);
+    setRelationshipCheckNotice("");
     setSelectedRelationshipFixes([]);
     setIsRelationshipPanelOpen(false);
     setHistory({ past: [], future: [] });
@@ -1688,6 +1692,7 @@ export function App() {
   function clearDerivedResults() {
     setValidationIssues([]);
     setRelationshipIssues([]);
+    setRelationshipCheckNotice("");
     setSelectedRelationshipFixes([]);
     setShowIssueRowsOnly(false);
     setHasUnscannedChanges(true);
@@ -2605,12 +2610,23 @@ export function App() {
     setRelationshipRules((currentRules) => currentRules.filter((rule) => rule.id !== ruleId));
     setRelationshipIssues((currentIssues) => currentIssues.filter((issue) => issue.ruleId !== ruleId));
     setSelectedRelationshipFixes([]);
+    setRelationshipCheckNotice("");
   }
 
   function checkRelationshipRules(ruleId = null) {
     const rulesToCheck = relationshipRuleStates.filter((rule) => rule.enabled && rule.validation.valid && (!ruleId || rule.id === ruleId));
+    const circularRuleIds = ruleId ? new Set() : getCircularFormulaRuleIds(rulesToCheck.map((rule) => ({
+      ...rule,
+      references: rule.validation.references ?? [],
+    })));
     const nextIssues = rulesToCheck.flatMap((rule) => {
-      if (rule.kind !== "lookup") return checkRelationshipRows(rows, rule, rule.validation.ast, relationshipColumnRules);
+      if (rule.kind !== "lookup") return checkRelationshipRows(
+        rows,
+        rule,
+        rule.validation.ast,
+        relationshipColumnRules,
+        { fillOnly: circularRuleIds.has(rule.id) },
+      );
       const directions = [
         { sourceColumn: rule.sourceColumn, targetColumn: rule.targetColumn },
         ...(rule.bidirectional
@@ -2623,6 +2639,9 @@ export function App() {
         direction.targetColumn,
       ).issues);
     });
+    setRelationshipCheckNotice(circularRuleIds.size
+      ? `${circularRuleIds.size} formulas form a loop. Check all fills their damaged targets but does not rewrite valid values. Use Check on one saved rule when you want to correct its target.`
+      : "");
     setRelationshipIssues((currentIssues) => {
       const retainedIssues = ruleId
         ? currentIssues.filter((issue) => issue.ruleId !== ruleId)
@@ -2885,6 +2904,7 @@ export function App() {
     });
     setValidationIssues([]);
     setRelationshipIssues([]);
+    setRelationshipCheckNotice("");
     setSelectedRelationshipFixes([]);
     setIsValidationPanelOpen(false);
     setShowIssueRowsOnly(false);
@@ -3019,6 +3039,7 @@ export function App() {
     setColumnRules(nextColumnRules);
     setValidationIssues(validateRows(nextVisibleRows, nextVisibleColumnRules));
     setRelationshipIssues([]);
+    setRelationshipCheckNotice("");
     setSelectedRelationshipFixes([]);
     setLastScannedAt(new Date());
     setColumnConversionNotice(`${convertedCount.toLocaleString()} values converted${skippedCount ? `; ${skippedCount.toLocaleString()} invalid values skipped` : ""}.`);
@@ -3068,6 +3089,7 @@ export function App() {
     }
     setValidationIssues(validateRows(nextVisibleRows, visibleColumnRules));
     setRelationshipIssues([]);
+    setRelationshipCheckNotice("");
     setSelectedRelationshipFixes([]);
     setLastScannedAt(new Date());
     setColumnConversionNotice(
@@ -4070,7 +4092,7 @@ export function App() {
                   </li>
                   <li>
                     <span>6</span>
-                    <div><strong>Run the relationships in passes</strong><p>Click <HintCode hint="Runs every enabled Logical and Mathematical relation against the current data">Check all relationships</HintCode>, select every fixable row, and apply the fixes, then check again because a recovered price may reveal an Item and a recovered Item may reveal another price</p></div>
+                    <div><strong>Run the relationships in passes</strong><p>Click <HintCode hint="Runs every enabled Logical and Mathematical relation against the current data">Check all relationships</HintCode>, select every fixable row, and apply the fixes, then check again because a recovered price may reveal an Item and a recovered Item may reveal another price. The three formulas form a loop, so Check all fills damaged cells without rewriting values that already work</p></div>
                   </li>
                   <li>
                     <span>7</span>
@@ -4078,7 +4100,7 @@ export function App() {
                   </li>
                   <li>
                     <span>8</span>
-                    <div><strong>Move only the hopeless rows</strong><p>After the relationships stop finding fixes, scan again and open <HintCode hint="Shows every empty or invalid cell found during the latest scan">Validation Issues</HintCode>. Use <HintCode hint="Moves affected rows out of the active table while keeping them recoverable">Move rows to Data Bin</HintCode> only when Item, price, quantity, and total leave no trustworthy way to recover the row, then open <code>Data Bin</code> if you want to review or restore anything</p></div>
+                    <div><strong>Move only the hopeless rows</strong><p>After the relationships stop finding fixes, 26 rows will still have fewer than two usable values across Quantity, Price Per Unit, and Total Spent. Keep those columns visible, scan again and use <HintCode hint="Moves affected rows out of the active table while keeping them recoverable">Move rows to Data Bin</HintCode> on those unrecoverable rows, then open <code>Data Bin</code> if you want to review or restore anything</p></div>
                   </li>
                   <li>
                     <span>9</span>
@@ -4382,6 +4404,7 @@ export function App() {
                         <p>{relationshipIssues.length
                           ? `${relationshipIssues.length.toLocaleString()} relationship issue${relationshipIssues.length === 1 ? "" : "s"} found.`
                           : "Check your saved rules to find fixable values."}</p>
+                        {relationshipCheckNotice && <p className="relationship-cycle-notice">{relationshipCheckNotice}</p>}
                         {Object.keys(lookupIssueCounts).length > 0 && (
                           <div className="lookup-preview-counts">
                             <span className="safe">{(lookupIssueCounts.safe ?? 0).toLocaleString()} safe</span>
@@ -5219,7 +5242,7 @@ function BootRelationshipWalkthrough() {
       </li>
       <li>
         <span>5</span>
-        <div><strong>Run the relationships in passes</strong><p>Click <HintCode hint="Runs every enabled Logical and Mathematical relation against the current data">Check all relationships</HintCode>, select every fixable row, and apply the fixes, then check again because one repaired cell may give another rule enough information to work</p></div>
+        <div><strong>Run the relationships in passes</strong><p>Click <HintCode hint="Runs every enabled Logical and Mathematical relation against the current data">Check all relationships</HintCode>, select every fixable row, and apply the fixes, then check again because one repaired cell may give another rule enough information to work. The three formulas form a loop, so Check all fills damaged cells without rewriting values that already work</p></div>
       </li>
       <li>
         <span>6</span>
@@ -5227,7 +5250,7 @@ function BootRelationshipWalkthrough() {
       </li>
       <li>
         <span>7</span>
-        <div><strong>Move only the hopeless rows</strong><p>After the relationships stop finding fixes, scan again and open <HintCode hint="Shows every empty or invalid cell found during the latest scan">Validation Issues</HintCode>. Use <HintCode hint="Moves affected rows out of the active table while keeping them recoverable">Move rows to Data Bin</HintCode> only when Item, price, quantity, and total leave no trustworthy way to recover the row, then open <code>Data Bin</code> if you want to review or restore anything</p></div>
+        <div><strong>Move only the hopeless rows</strong><p>After the relationships stop finding fixes, 26 rows will still have fewer than two usable values across Quantity, Price Per Unit, and Total Spent. Keep those columns visible, scan again and use <HintCode hint="Moves affected rows out of the active table while keeping them recoverable">Move rows to Data Bin</HintCode> on those unrecoverable rows, then open <code>Data Bin</code> if you want to review or restore anything</p></div>
       </li>
       <li>
         <span>8</span>
@@ -5484,7 +5507,7 @@ function parseNumericValueForConversion(value) {
   return Number.isFinite(numericValue) ? numericValue : null;
 }
 
-function checkRelationshipRows(rows, rule, ast, columnRules) {
+function checkRelationshipRows(rows, rule, ast, columnRules, { fillOnly = false } = {}) {
   const issues = [];
   rows.forEach((row, rowIndex) => {
     let calculatedValue;
@@ -5528,6 +5551,7 @@ function checkRelationshipRows(rows, rule, ast, columnRules) {
       });
       return;
     }
+    if (fillOnly) return;
     if (Math.abs(numericTarget - calculatedValue) > RELATIONSHIP_TOLERANCE) {
       issues.push({
         id: `${rule.id}:${row.__rowId}:mismatch`, ruleId: rule.id, rowId: row.__rowId, row: rowIndex + 1,
