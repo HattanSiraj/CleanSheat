@@ -167,6 +167,16 @@ test("optional pattern values need an allowed missing policy when blanks remain"
   }).complete, true);
   assert.equal(evaluateObjective(objective, {
     ...context,
+    rows: [{ Date: "2026-07-01" }, { Date: "UNKNOWN" }],
+    columnRules: { Date: { type: "Date", missingPolicy: "allowed", missingTokens: ["UNKNOWN"] } },
+  }).complete, true);
+  assert.equal(evaluateObjective(objective, {
+    ...context,
+    rows: [{ Date: "2026-07-01" }, { Date: "UNKNOWN" }],
+    columnRules: { Date: { type: "Date", missingPolicy: "allowed" } },
+  }).complete, false);
+  assert.equal(evaluateObjective(objective, {
+    ...context,
     rows: [{ Date: "2026-07-01" }],
   }).complete, true);
 });
@@ -469,6 +479,26 @@ test("group recovery objectives reject blanks and values copied from the wrong g
   }).complete, false);
 });
 
+test("group recovery can compare numeric values without treating decimal formatting as a disagreement", () => {
+  const objective = {
+    kind: "groupConsistencyRecovery",
+    column: "Price",
+    groupBy: "Item",
+    valueType: "Number",
+    tolerance: 0.01,
+    minimumGroups: 1,
+  };
+  assert.equal(evaluateObjective(objective, {
+    rows: [{ Item: "Cake", Price: "3.0" }, { Item: "Cake", Price: "3.00" }],
+  }).complete, true);
+  assert.equal(evaluateObjective(objective, {
+    rows: [{ Item: "Cake", Price: "3.50" }, { Item: "Cake", Price: "3.49" }],
+  }).complete, true);
+  assert.equal(evaluateObjective(objective, {
+    rows: [{ Item: "Cake", Price: "3.50" }, { Item: "Cake", Price: "3.48" }],
+  }).complete, false);
+});
+
 test("export schema objectives check the transforms formats and exact column order", () => {
   const objective = {
     kind: "exportSchema",
@@ -673,6 +703,110 @@ test("boot sequence accepts keeping or deleting its broken date rows", () => {
       rows: [...requiredRows, ...optionalDateRows].map((row) => ({ row })),
     }],
   }).complete, true);
+});
+
+test("Boot 0.5C can be completed without throwing away recoverable rows", () => {
+  const challenge = CHALLENGES.find((item) => item.id === "boot-sequence");
+  const csvUrl = new URL("../public/sample_sales.csv", import.meta.url);
+  const parsed = Papa.parse(readFileSync(csvUrl, "utf8"), { header: true, skipEmptyLines: true });
+  const rows = parsed.data.map((row, index) => ({ ...row, __rowId: `boot-complete-${index}` }));
+  const priceLabels = new Map([
+    ["Cake", "3.0"],
+    ["Coffee", "2.0"],
+    ["Cookie", "1.0"],
+    ["Juice", "3.5"],
+    ["Salad", "5.0"],
+    ["Sandwich", "4.0"],
+    ["Smoothie", "4.5"],
+    ["Tea", "1.5"],
+  ]);
+  const itemByPrice = new Map([...priceLabels].map(([item, price]) => [Number(price), item]));
+  const numericValue = (value) => String(value).trim() && Number.isFinite(Number(value)) ? Number(value) : null;
+  const lookupChanges = [];
+
+  for (let pass = 0; pass < 10; pass += 1) {
+    let changed = 0;
+    for (const row of rows) {
+      let item = String(row.Item).trim();
+      let quantity = numericValue(row.Quantity);
+      let price = numericValue(row["Price Per Unit"]);
+      let total = numericValue(row["Total Spent"]);
+      if (priceLabels.has(item) && price === null) {
+        row["Price Per Unit"] = priceLabels.get(item);
+        price = Number(row["Price Per Unit"]);
+        lookupChanges.push({ rowId: row.__rowId, column: "Price Per Unit" });
+        changed += 1;
+      }
+      if (!priceLabels.has(item) && price !== null && itemByPrice.has(price)) {
+        row.Item = itemByPrice.get(price);
+        lookupChanges.push({ rowId: row.__rowId, column: "Item" });
+        changed += 1;
+      }
+      if (quantity !== null && price !== null && (total === null || Math.abs(total - quantity * price) > 0.01)) {
+        row["Total Spent"] = (quantity * price).toFixed(2);
+        total = Number(row["Total Spent"]);
+        changed += 1;
+      }
+      if (total !== null && price !== null && price !== 0 && (quantity === null || Math.abs(quantity - total / price) > 0.01)) {
+        row.Quantity = (total / price).toFixed(2);
+        quantity = Number(row.Quantity);
+        changed += 1;
+      }
+      if (total !== null && quantity !== null && quantity !== 0 && (price === null || Math.abs(price - total / quantity) > 0.01)) {
+        row["Price Per Unit"] = (total / quantity).toFixed(2);
+        changed += 1;
+      }
+    }
+    if (!changed) break;
+  }
+
+  const unrecoverableIds = new Set(rows
+    .filter((row) => [row.Quantity, row["Price Per Unit"], row["Total Spent"]]
+      .filter((value) => numericValue(value) !== null).length < 2)
+    .map((row) => row.__rowId));
+  const dataBin = rows
+    .filter((row) => unrecoverableIds.has(row.__rowId))
+    .map((row) => ({ row }));
+  const activeRows = rows.filter((row) => !unrecoverableIds.has(row.__rowId));
+  assert.equal(dataBin.length, 26);
+
+  const relationshipRule = {
+    id: "boot-item-price",
+    kind: "lookup",
+    enabled: true,
+    sourceColumn: "Item",
+    targetColumn: "Price Per Unit",
+    bidirectional: true,
+  };
+  const columnRules = {
+    Item: { type: "Category" },
+    Quantity: { type: "Number" },
+    "Price Per Unit": { type: "Number" },
+    "Total Spent": { type: "Number" },
+    "Transaction Date": {
+      type: "Date",
+      missingPolicy: "allowed",
+      missingTokens: ["ERROR", "UNKNOWN"],
+    },
+  };
+  const result = evaluateChallenge(challenge, {
+    rows: activeRows,
+    columns: parsed.meta.fields,
+    columnRules,
+    scanIssues: [],
+    lastScannedAt: Date.now(),
+    relationshipRules: [relationshipRule],
+    history: [{
+      kind: "cells",
+      audit: { type: "lookupFix", relationshipIds: [relationshipRule.id] },
+      changes: lookupChanges,
+    }],
+    dataBin,
+  });
+  const unfinished = [...result.objectives, ...result.rules]
+    .filter((item) => !item.complete)
+    .map((item) => `${item.title}: ${item.detail}`);
+  assert.equal(result.complete, true, unfinished.join("\n"));
 });
 
 test("Issue Training starts with three bad targets and accepts the walkthrough repair", () => {

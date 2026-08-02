@@ -1,5 +1,6 @@
 import { evaluateFormula, parseFormula, parseFormulaNumber } from "./formulaEngine.js";
 import { cleanTextValue } from "./cleaningOperations.js";
+import { isMissingValue } from "./missingValues.js";
 
 export function evaluateChallenge(challenge, context) {
   if (!challenge) return emptyEvaluation();
@@ -403,9 +404,10 @@ function evaluatePatternMatch(objective, context) {
   }
   let invalid = 0;
   let blank = 0;
+  const columnRule = context.rules[objective.column] ?? {};
   for (const row of context.rows) {
     const value = String(row[objective.column] ?? "");
-    if (!value.trim() && objective.allowBlank) {
+    if (objective.allowBlank && isMissingValue(value, columnRule)) {
       blank += 1;
       continue;
     }
@@ -414,7 +416,7 @@ function evaluatePatternMatch(objective, context) {
   }
   const missingNeedsPermission = blank > 0
     && objective.requireAllowedMissingWhenBlank
-    && context.rules[objective.column]?.missingPolicy !== "allowed";
+    && columnRule.missingPolicy !== "allowed";
   return {
     complete: context.rows.length > 0 && invalid === 0 && !missingNeedsPermission,
     detail: invalid
@@ -467,15 +469,17 @@ function evaluateGroupConsistencyRecovery(objective, rows) {
   const groups = new Map();
   let missing = 0;
   for (const row of rows) {
-    const value = String(row[objective.column] ?? "").trim();
+    const value = normalizeConsistencyValue(row[objective.column], objective.valueType);
     if (!value) missing += 1;
-    const group = String(row[objective.groupBy] ?? "").trim();
+    const group = normalizeConsistencyValue(row[objective.groupBy], objective.groupType);
     if (!group || !matchesGroupSelector(group, objective.selector)) continue;
     const values = groups.get(group) ?? new Set();
     if (value) values.add(value);
     groups.set(group, values);
   }
-  const inconsistent = [...groups.values()].filter((values) => values.size > 1).length;
+  const inconsistent = [...groups.values()].filter((values) => (
+    consistencyValuesDisagree(values, objective.valueType, objective.tolerance)
+  )).length;
   const enoughGroups = groups.size >= (objective.minimumGroups ?? 1);
   const groupLabel = objective.groupBy || "value";
   const detail = missing
@@ -486,6 +490,21 @@ function evaluateGroupConsistencyRecovery(objective, rows) {
         ? `Too few ${groupLabel} groups remain`
         : `${groups.size.toLocaleString()} ${groupLabel} groups are consistent`;
   return { complete: rows.length > 0 && missing === 0 && inconsistent === 0 && enoughGroups, detail };
+}
+
+function normalizeConsistencyValue(value, type) {
+  const text = String(value ?? "").trim();
+  if (type !== "Number" || !text) return text;
+  const numeric = toNumber(text);
+  return numeric === null ? text : String(numeric);
+}
+
+function consistencyValuesDisagree(values, type, tolerance = 0) {
+  if (values.size <= 1) return false;
+  if (type !== "Number" || tolerance <= 0) return true;
+  const numericValues = [...values].map(Number).filter(Number.isFinite);
+  if (numericValues.length !== values.size) return true;
+  return Math.max(...numericValues) - Math.min(...numericValues) > tolerance + Number.EPSILON;
 }
 
 function matchesGroupSelector(value, selector = {}) {

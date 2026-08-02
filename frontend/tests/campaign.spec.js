@@ -1,18 +1,21 @@
 import { expect, test } from "@playwright/test";
+import { CHALLENGES } from "../src/challengeData.js";
 
-const CORE_COMPLETIONS = [
-  ["boot-scan-training", 2],
-  ["boot-category-training", 2],
-  ["boot-issue-training", 1],
-  ["boot-recovery-training", 1],
-  ["boot-sequence", 4],
-  ["cafe-closing-time", 5],
-  ["signup-swamp", 3],
-  ["warehouse-echoes", 4],
-  ["support-night-shift", 3],
-  ["dataset-from-hell", 4],
-  ["final-final-export", 7],
+const CORE_COMPLETION_IDS = [
+  "boot-scan-training",
+  "boot-category-training",
+  "boot-issue-training",
+  "boot-recovery-training",
+  "boot-sequence",
+  "cafe-closing-time",
+  "signup-swamp",
+  "warehouse-echoes",
+  "support-night-shift",
+  "dataset-from-hell",
+  "final-final-export",
 ];
+const challengeRevisions = new Map(CHALLENGES.map((challenge) => [challenge.id, challenge.revision]));
+const CORE_COMPLETIONS = CORE_COMPLETION_IDS.map((id) => [id, challengeRevisions.get(id)]);
 
 test.beforeEach(async ({ page }, testInfo) => {
   let progressJson = "";

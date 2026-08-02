@@ -4074,7 +4074,7 @@ export function App() {
                   </li>
                   <li>
                     <span>7</span>
-                    <div><strong>Handle the dates without guessing</strong><p>Show <span className="column-reference">Transaction Date</span>, set it to <code>Date</code> with <code>YYYY-MM-DD</code>, then use <code>Missing Rules</code> to allow genuinely empty dates. Change known date formats or edit a date only when the correct value is clear</p></div>
+                    <div><strong>Handle the dates without guessing</strong><p>Show <span className="column-reference">Transaction Date</span>, set it to <code>Date</code> with <code>YYYY-MM-DD</code>, then open <code>Missing Rules</code>, allow missing values and add ERROR and UNKNOWN as missing tokens. They mean the real date is unknown so leave them missing instead of inventing one</p></div>
                   </li>
                   <li>
                     <span>8</span>
@@ -5223,7 +5223,7 @@ function BootRelationshipWalkthrough() {
       </li>
       <li>
         <span>6</span>
-        <div><strong>Handle the dates without guessing</strong><p>Show <span className="column-reference">Transaction Date</span>, set it to <code>Date</code> with <code>YYYY-MM-DD</code>, then use <code>Missing Rules</code> to allow genuinely empty dates. Change known date formats or edit a date only when the correct value is clear</p></div>
+        <div><strong>Handle the dates without guessing</strong><p>Show <span className="column-reference">Transaction Date</span>, set it to <code>Date</code> with <code>YYYY-MM-DD</code>, then open <code>Missing Rules</code>, allow missing values and add ERROR and UNKNOWN as missing tokens. They mean the real date is unknown so leave them missing instead of inventing one</p></div>
       </li>
       <li>
         <span>7</span>
