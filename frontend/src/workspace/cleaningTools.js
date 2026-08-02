@@ -43,12 +43,10 @@ export const CLEANING_TOOLS = [
     availability: "columns",
   },
   {
-    id: "recipes",
-    title: "Cleaning Recipes",
-    cardTitle: "Recipes (WIP use with care)",
-    cardDescription: "Stores actions made automatically, reuse it on another CSV",
-    lockedDescription: "Recipes are available in Free Clean",
-    description: "Stores every action made automatically, for files that shares the same format/structure (WIP)",
+    id: "dataBin",
+    title: "Data Bin",
+    cardDescription: "Review and restore rows moved out of the active table",
+    description: "Rows stay recoverable here and can be restored or exported separately",
     availability: "always",
   },
 ];

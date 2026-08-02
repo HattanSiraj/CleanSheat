@@ -7,6 +7,7 @@ const OBJECTIVE_TOOL_RULES = {
   duplicates: new Set(["unique"]),
   textCleanup: new Set(["allowedValues", "textNormalized"]),
   manageColumns: new Set(["calculatedColumn", "transformedColumns", "columnsAbsent", "columnsPresent", "exportSchema"]),
+  dataBin: new Set(["guidedRowCleanup", "rowsInBin"]),
 };
 
 export function getChallengeCleaningTools(challenge) {

@@ -8,5 +8,5 @@ test("cleaning tool registry has unique IDs and complete labels", () => {
   assert.ok(CLEANING_TOOLS.every((tool) => tool.title && tool.cardDescription && tool.description));
   assert.equal(CLEANING_TOOLS[0].id, "fillIssues");
   assert.equal(getCleaningTool("missingValues").title, "Missing Rules");
-  assert.equal(getCleaningTool("recipes").title, "Cleaning Recipes");
+  assert.equal(getCleaningTool("dataBin").title, "Data Bin");
 });

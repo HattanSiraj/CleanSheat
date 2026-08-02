@@ -11,6 +11,10 @@ export function Clipbit({
   campaign = false,
   hell = false,
   reducedEffects = false,
+  spotlight = false,
+  embedded = false,
+  spotlightActionLabel = "",
+  onSpotlightAction,
   onToggle,
   onMinimize,
   onPester,
@@ -100,24 +104,31 @@ export function Clipbit({
   }
 
   return (
-    <aside className={`clipbit ${minimized ? "minimized" : ""} ${campaign ? "campaign-mode" : ""} ${hell ? "hell-mode" : ""} ${glitching ? "glitching" : ""} ${breaking ? "breaking" : ""}`} aria-live="polite">
+    <aside className={`clipbit ${minimized ? "minimized" : ""} ${campaign ? "campaign-mode" : ""} ${hell ? "hell-mode" : ""} ${spotlight ? "row-wipeout-scene" : ""} ${embedded ? "embedded" : ""} ${glitching ? "glitching" : ""} ${breaking ? "breaking" : ""}`} aria-live="polite">
       {!minimized && message && (
         <div className="clipbit-bubble">
-          <button type="button" className="clipbit-minimize" onClick={onToggle} aria-label="Minimize Clipbit">x</button>
+          {!spotlight && !embedded && <button type="button" className="clipbit-minimize" onClick={onToggle} aria-label="Minimize Clipbit">x</button>}
           {(isTip || isNonsense) && (
             <span className={`clipbit-tip-label ${isNonsense ? "nonsense" : ""}`}>
               {isNonsense ? "NONSENSE" : "TIP / TRICK"}
             </span>
           )}
           <p>{visibleMessage}</p>
+          {spotlight && spotlightActionLabel && (
+            <button type="button" className="clipbit-spotlight-action" onClick={onSpotlightAction}>
+              {spotlightActionLabel}
+            </button>
+          )}
         </div>
       )}
       <button
         type="button"
         className={`clipbit-character ${visibleMood}`}
         data-game-sound="custom"
-        onClick={handleCharacterClick}
-        aria-label={minimized ? "Open Clipbit" : "Bother Clipbit"}
+        onClick={spotlight || embedded ? undefined : handleCharacterClick}
+        tabIndex={embedded ? -1 : undefined}
+        aria-disabled={embedded || undefined}
+        aria-label={spotlight ? "Clipbit judges the empty table" : embedded ? "Clipbit celebrates the clean dataset" : minimized ? "Open Clipbit" : "Bother Clipbit"}
       >
         <svg viewBox="0 0 120 150" role="img" aria-label={`Clipbit looks ${visibleMood}`}>
           <path className="clipbit-shadow" d="M27 135h72v9H27z" />

@@ -22,15 +22,23 @@ import {
 } from "./cleaningOperations.js";
 import { DATE_PRESET_IDS, buildDateConversionChanges, isDate, isRealDate } from "./dateConversion.js";
 import {
-  RECIPE_STORAGE_KEY,
-  createRecipe,
-  getRecipeStepLabel,
-  moveRecipeStep,
-  parseRecipeJson,
-  readRecipes,
-  serializeRecipe,
-  validateRecipe,
-} from "./recipeEngine.js";
+  createBinEntries,
+  createDataBinExportRows,
+  getArchivedColumns,
+  moveEntriesToBin,
+  normalizeDataBin,
+  restoreEntriesFromBin,
+} from "./dataBin.js";
+import {
+  checkLookupRows,
+  checkLookupRowsInChunks,
+  getLookupStrengthLevel,
+  rankLookupCandidates,
+  recommendLookupDirection,
+  sampleLookupRows,
+  validateLookupRule,
+} from "./lookupEngine.js";
+import { LookupValuePreview } from "./LookupValuePreview.jsx";
 import { evaluateFormula, formatFormulaNumber, parseFormula, parseFormulaNumber } from "./formulaEngine.js";
 import { CHALLENGES, getChallenge, hasCurrentChallengeRevision } from "./challengeData.js";
 import { evaluateChallengeInChunks } from "./challengeEngine.js";
@@ -56,10 +64,10 @@ import { AchievementToast, AchievementsDialog, ScanOverlay, SoundControls } from
 import { OfficeChat } from "./game/OfficeChat.jsx";
 import { getOfficeMessage } from "./game/officeMessages.js";
 import { PixelSelectOverlay } from "./game/PixelSelectOverlay.jsx";
-import { GAME_PROGRESS_KEY, readGameProgress, recordChallengeResult, writeGameProgress } from "./game/progress.js";
+import { GAME_PROGRESS_KEY, isBootComplete, readGameProgress, recordChallengeResult, writeGameProgress } from "./game/progress.js";
 import { useMovablePanel } from "./game/useMovablePanel.js";
 import { processRowsInChunks } from "./workspace/chunkedRows.js";
-import { appendHistoryAction, canStoreHistoryAction } from "./workspace/history.js";
+import { appendHistoryAction, canStoreHistoryAction, normalizeHistorySnapshot } from "./workspace/history.js";
 import { useWorkspaceController } from "./workspace/useWorkspaceController.js";
 import { CLEANING_TOOLS, getCleaningTool } from "./workspace/cleaningTools.js";
 import { parseCsvInChunks } from "./workspace/csvImport.js";
@@ -78,7 +86,7 @@ import {
   calculateChallengeScore,
   createRunStats,
   getActionChangeSize,
-  getDeletedRowCount,
+  getBinnedRowCount,
   isScoreableAction,
   normalizeRunStats,
 } from "./game/scoring.js";
@@ -131,7 +139,7 @@ const CLIPBIT_FILE_RAGE_COUNT = 4;
 const CLIPBIT_FILE_RAGE_WINDOW = 15000;
 const VIEWPORT_FEEDBACK_KINDS = new Set(["scan-clean", "scan-error", "objective", "combo", "victory"]);
 const CLIPBIT_CAMPAIGN_TIPS = [
-  "TIP // Boot Sequence unlocks every challenge after one successful cleanup",
+  "TIP // Finish all five Boot Sequence stages to power the challenge rack",
   "TIP // Free Clean gives you access to all the data cleaning tools on your 'own' CSV files",
 ];
 const CLIPBIT_CAMPAIGN_NONSENSE = [
@@ -212,7 +220,7 @@ const GRID_ROW_SELECTION = {
   headerCheckbox: false,
   enableClickSelection: true,
 };
-const EMPTY_RELATIONSHIP_DRAFT = { id: "", name: "", targetColumn: "", formula: "", enabled: true };
+const EMPTY_RELATIONSHIP_DRAFT = { id: "", kind: "formula", name: "", sourceColumn: "", targetColumn: "", formula: "", lookupDirection: "none", bidirectional: false, enabled: true };
 const EMPTY_FILL_DRAFT = {
   column: "",
   scope: "both",
@@ -271,6 +279,7 @@ export function App() {
   const clipbitFileHitTimesRef = useRef([]);
   const officeMessageSequenceRef = useRef(0);
   const officeMessageTurnsRef = useRef({});
+  const lookupAnalysisAbortRef = useRef(null);
   const {
     state: {
       rows,
@@ -286,8 +295,8 @@ export function App() {
       relationshipRules,
       relationshipIssues,
       selectedRelationshipFixes,
+      dataBin,
       history,
-      capturedRecipeSteps,
       challengeEvaluation,
       runStats,
     },
@@ -305,8 +314,8 @@ export function App() {
       setRelationshipRules,
       setRelationshipIssues,
       setSelectedRelationshipFixes,
+      setDataBin,
       setHistory,
-      setCapturedRecipeSteps,
       setChallengeEvaluation,
       setRunStats,
     },
@@ -327,6 +336,9 @@ export function App() {
   const [isInformationOpen, setIsInformationOpen] = useState(false);
   const [isInformationPortable, setIsInformationPortable] = useState(false);
   const [relationshipDraft, setRelationshipDraft] = useState(EMPTY_RELATIONSHIP_DRAFT);
+  const [lookupPreview, setLookupPreview] = useState(null);
+  const [lookupFinder, setLookupFinder] = useState(null);
+  const [lookupAnalysisProgress, setLookupAnalysisProgress] = useState(null);
   const [isRelationshipPanelOpen, setIsRelationshipPanelOpen] = useState(false);
   const [findReplaceDraft, setFindReplaceDraft] = useState({ find: "", replace: "", mode: "exact", caseSensitive: true });
   const [fillDraft, setFillDraft] = useState(EMPTY_FILL_DRAFT);
@@ -343,12 +355,8 @@ export function App() {
   const [combineDraft, setCombineDraft] = useState(EMPTY_COMBINE_DRAFT);
   const [columnOperationMode, setColumnOperationMode] = useState("create");
   const [showIssueRowsOnly, setShowIssueRowsOnly] = useState(false);
-  const [savedRecipes, setSavedRecipes] = useState(() => readRecipes(window.localStorage));
-  const [recipeName, setRecipeName] = useState("");
-  const [recipeMessage, setRecipeMessage] = useState("");
-  const [recipePreview, setRecipePreview] = useState(null);
-  const [renamingRecipeId, setRenamingRecipeId] = useState("");
-  const [renamingRecipeName, setRenamingRecipeName] = useState("");
+  const [selectedGridRowIds, setSelectedGridRowIds] = useState([]);
+  const [selectedBinEntryIds, setSelectedBinEntryIds] = useState([]);
   const [viewMode, setViewMode] = useState("campaign");
   const [activeChallengeId, setActiveChallengeId] = useState("");
   const [isObjectivesOpen, setIsObjectivesOpen] = useState(true);
@@ -385,6 +393,8 @@ export function App() {
   });
   const [isClipbitMinimized, setIsClipbitMinimized] = useState(true);
   const [clipbitBreakSignal, setClipbitBreakSignal] = useState(0);
+  const [isRowWipeoutSceneOpen, setIsRowWipeoutSceneOpen] = useState(false);
+  const [rowWipeoutChallengeId, setRowWipeoutChallengeId] = useState("");
   const [officeMessages, setOfficeMessages] = useState([]);
   const [isOfficeChatOpen, setIsOfficeChatOpen] = useState(false);
   const [autosaveReady, setAutosaveReady] = useState(false);
@@ -443,14 +453,6 @@ export function App() {
   }, [relationshipRules]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(RECIPE_STORAGE_KEY, JSON.stringify(savedRecipes));
-    } catch {
-      setRecipeMessage("Recipes could not be saved in this browser. Export them as JSON instead.");
-    }
-  }, [savedRecipes]);
-
-  useEffect(() => {
     writeGameProgress(gameProgress);
   }, [gameProgress]);
 
@@ -489,6 +491,19 @@ export function App() {
   }, [viewMode, activeChallengeId]);
 
   useEffect(() => {
+    if (!selectedGridRowIds.length) return undefined;
+    function clearSelectionOutsideTable(event) {
+      if (!(event.target instanceof Element)) return;
+      if (event.target.closest(".ag-cell, .ag-header-cell, .ag-paging-panel, .ag-popup, .move-selected-rows-button, .confirmation-backdrop")) return;
+      gridRef.current?.api?.deselectAll();
+      gridRef.current?.api?.clearFocusedCell();
+      setSelectedGridRowIds([]);
+    }
+    document.addEventListener("pointerdown", clearSelectionOutsideTable, true);
+    return () => document.removeEventListener("pointerdown", clearSelectionOutsideTable, true);
+  }, [selectedGridRowIds.length, setSelectedGridRowIds]);
+
+  useEffect(() => {
     if (activeAchievement || !achievementQueue.length) return undefined;
     const [nextAchievement, ...remaining] = achievementQueue;
     setActiveAchievement(nextAchievement);
@@ -518,7 +533,7 @@ export function App() {
 
   useEffect(() => {
     if (viewMode !== "campaign" && !activeChallenge) return undefined;
-    if (isScanning || isChallengeCelebrating || isChallengeResultOpen) return undefined;
+    if (isScanning || isChallengeCelebrating || isChallengeResultOpen || isRowWipeoutSceneOpen) return undefined;
     const timeoutId = window.setTimeout(() => {
       const tips = isHellContext
         ? CLIPBIT_HELL_TIPS
@@ -546,6 +561,7 @@ export function App() {
     isChallengeCelebrating,
     isChallengeResultOpen,
     isHellContext,
+    isRowWipeoutSceneOpen,
     isScanning,
     viewMode,
   ]);
@@ -572,7 +588,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!autosaveReady || !rows.length) return undefined;
+    if (!autosaveReady || (!rows.length && !dataBin.length)) return undefined;
     setAutosaveStatus("Saving...");
     const timeoutId = window.setTimeout(() => {
       const workspaceId = activeChallengeId ? `challenge:${activeChallengeId}` : "normal";
@@ -581,7 +597,7 @@ export function App() {
         .catch(() => setAutosaveStatus("Autosave unavailable"));
     }, 700);
     return () => window.clearTimeout(timeoutId);
-  }, [activeChallengeId, autosaveReady, capturedRecipeSteps, columnRules, columns, fileName, relationshipRules, rows, runStats, showRowNumbers, visibleColumns]);
+  }, [activeChallengeId, autosaveReady, columnRules, columns, dataBin, fileName, history, relationshipRules, rows, runStats, showRowNumbers, visibleColumns]);
 
   useEffect(() => {
     if (viewMode !== "campaign") return;
@@ -712,9 +728,7 @@ export function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [history]);
 
-  useEffect(() => {
-    if (!isCleaningToolsOpen) setRecipePreview(null);
-  }, [isCleaningToolsOpen]);
+  useEffect(() => () => lookupAnalysisAbortRef.current?.abort(), [columnRules, rows, visibleColumns]);
 
   const relationshipRuleStates = useMemo(
     () => relationshipRules.map((rule) => ({ ...rule, validation: validateRelationshipRule(rule, columns) })),
@@ -724,6 +738,23 @@ export function App() {
     () => validateRelationshipRule(relationshipDraft, columns),
     [columns, relationshipDraft],
   );
+  const isLookupPreviewCurrent = relationshipDraft.kind === "lookup"
+    && lookupPreview?.rows === rows
+    && lookupPreview?.columnRules === columnRules
+    && lookupPreview?.sourceColumn === relationshipDraft.sourceColumn
+    && lookupPreview?.targetColumn === relationshipDraft.targetColumn;
+  const activeLookupPreview = isLookupPreviewCurrent ? lookupPreview : null;
+  const isLookupFinderCurrent = relationshipDraft.kind === "lookup"
+    && lookupFinder?.rows === rows
+    && lookupFinder?.columnRules === columnRules
+    && lookupFinder?.visibleColumns === visibleColumns
+    && lookupFinder?.anchorColumn === relationshipDraft.sourceColumn;
+  const activeLookupFinder = isLookupFinderCurrent ? lookupFinder : null;
+  const canSaveRelationship = relationshipDraftValidation.valid
+    && (
+      relationshipDraft.kind !== "lookup"
+      || (isLookupPreviewCurrent && relationshipDraft.lookupDirection !== "none")
+    );
 
   const regexRuleLibrary = useMemo(
     () => [...REGEX_CHEAT_SHEET, ...savedRegexRules],
@@ -822,9 +853,19 @@ export function App() {
   const fillColumnRule = fillDraft.column && fillDraft.column !== ALL_ISSUE_COLUMNS
     ? resolveColumnRule(columnRules[fillDraft.column] ?? createColumnRule("Text"), regexRuleLibrary)
     : null;
-  const fillMethods = fillDraft.column === ALL_ISSUE_COLUMNS
+  const campaignFillMethods = new Set(["custom", "customDate"]);
+  for (const objective of activeChallenge?.objectives ?? []) {
+    if (objective.kind === "groupMedianFill") campaignFillMethods.add("median");
+    if (objective.kind === "fillContract") campaignFillMethods.add(objective.method);
+    if (objective.kind === "groupConsistencyRecovery") campaignFillMethods.add("mode");
+    if (objective.kind === "method") campaignFillMethods.add(objective.method);
+  }
+  const availableFillMethods = fillDraft.column === ALL_ISSUE_COLUMNS
     ? getFillMethodsForType("").filter((method) => method.id === "custom")
     : getFillMethodsForType(fillColumnRule?.type ?? "Text");
+  const fillMethods = activeChallenge
+    ? availableFillMethods.filter((method) => campaignFillMethods.has(method.id))
+    : availableFillMethods;
   const selectedFillMethod = fillMethods.find((method) => method.id === fillDraft.method) ?? null;
   const effectiveFillCustomValue = getFillReplacementValue(fillDraft, fillColumnRule);
   const fillPreview = useMemo(() => {
@@ -851,6 +892,9 @@ export function App() {
       isIgnoredMissing: (value, row) => isMissingValue(value, rule) && !getMissingIssue(row, deferredFillDraft.column, rule),
     });
   }, [activeCleaningTool, columnRules, deferredFillDraft, fillIssueColumns, isCleaningToolsOpen, regexRuleLibrary, rows]);
+  const estimatedFillWarning = selectedFillMethod && !["custom", "customDate"].includes(selectedFillMethod.id)
+    ? `This method estimates ${fillPreview.targetCount.toLocaleString()} values from other rows and does not recover row level truth`
+    : "";
   const isFillPreviewPending = deferredFillDraft !== fillDraft;
   const customFillWarning = useMemo(() => {
     if (!isCleaningToolsOpen || activeCleaningTool !== "fillIssues" || !["custom", "customDate"].includes(fillDraft.method)) return "";
@@ -902,6 +946,11 @@ export function App() {
     () => relationshipIssues.filter((issue) => issue.fixable),
     [relationshipIssues],
   );
+  const lookupIssueCounts = useMemo(() => relationshipIssues.reduce((counts, issue) => {
+    if (!issue.status) return counts;
+    counts[issue.status] = (counts[issue.status] ?? 0) + 1;
+    return counts;
+  }, {}), [relationshipIssues]);
   const validationIssueRowCount = useMemo(
     () => new Set(validationIssues.map((issue) => issue.row)).size,
     [validationIssues],
@@ -920,6 +969,22 @@ export function App() {
       : rows,
     [rows, showIssueRowsOnly, validationIssueRowIds],
   );
+  const dataBinGridColumns = useMemo(() => {
+    const archivedColumns = dataBin.flatMap((entry) => entry.originalColumns ?? []);
+    const rowColumns = [...new Set([...columns, ...archivedColumns])].filter((column) => column !== "__rowId");
+    return [
+      { field: "reason", headerName: "Reason", minWidth: 220, pinned: "left" },
+      { field: "sourceAction", headerName: "Source", minWidth: 170 },
+      { field: "movedAt", headerName: "Moved At", minWidth: 190 },
+      { field: "originalIndex", headerName: "Original Row", valueFormatter: (params) => Number(params.value) + 1, minWidth: 135 },
+      ...rowColumns.map((column) => ({
+        colId: `row:${column}`,
+        headerName: column,
+        valueGetter: (params) => params.data?.row?.[column] ?? "",
+        minWidth: 150,
+      })),
+    ];
+  }, [columns, dataBin]);
 
   const gridColumns = useMemo(
     () =>
@@ -967,15 +1032,16 @@ export function App() {
 
   function createCurrentWorkspaceSnapshot() {
     return {
-      version: 2,
+      version: 4,
       rows,
+      dataBin,
       columns,
       visibleColumns,
       columnRules,
       fileName,
       showRowNumbers,
       relationshipRules,
-      capturedRecipeSteps,
+      history,
       runStats,
       challengeRevision: activeChallenge?.revision ?? null,
     };
@@ -983,6 +1049,7 @@ export function App() {
 
   function restoreWorkspaceSnapshot(snapshot, challengeId = "") {
     setRows(snapshot.rows ?? []);
+    setDataBin(normalizeDataBin(snapshot.dataBin));
     setColumns(snapshot.columns ?? []);
     setVisibleColumns(snapshot.visibleColumns ?? snapshot.columns ?? []);
     setColumnRules(snapshot.columnRules ?? {});
@@ -992,15 +1059,16 @@ export function App() {
     setHasUnscannedChanges(Boolean(snapshot.rows?.length));
     setShowRowNumbers(snapshot.showRowNumbers ?? true);
     setSelectedColumn(snapshot.columns?.[0] ?? "");
-    setRelationshipRules(snapshot.relationshipRules ?? []);
-    setHistory({ past: [], future: [] });
-    setCapturedRecipeSteps(snapshot.capturedRecipeSteps ?? []);
+    setRelationshipRules((snapshot.relationshipRules ?? []).map((rule) => ({ kind: "formula", ...rule })));
+    setHistory(normalizeHistorySnapshot(snapshot.history));
     setChallengeEvaluation(null);
     setRunStats(normalizeRunStats(snapshot.runStats));
     setActiveChallengeId(challengeId);
     setIsValidationPanelOpen(false);
     setIsRelationshipPanelOpen(false);
     setShowIssueRowsOnly(false);
+    setSelectedGridRowIds([]);
+    setSelectedBinEntryIds([]);
   }
 
   async function loadData(nextRows, nextFileName, options = {}) {
@@ -1028,6 +1096,7 @@ export function App() {
     );
 
     setRows(normalizedRows);
+    setDataBin([]);
     setColumns(nextColumns);
     setVisibleColumns(nextColumns);
     setColumnRules(initialRules);
@@ -1040,9 +1109,9 @@ export function App() {
     setRelationshipIssues([]);
     setSelectedRelationshipFixes([]);
     setHistory({ past: [], future: [] });
-    setCapturedRecipeSteps([]);
     setShowIssueRowsOnly(false);
-    setRecipePreview(null);
+    setSelectedGridRowIds([]);
+    setSelectedBinEntryIds([]);
     setActiveChallengeId(options.challengeId ?? "");
     setChallengeEvaluation(null);
     setRunStats(createRunStats());
@@ -1169,12 +1238,12 @@ export function App() {
     setClipbitReaction({
       message: campaignPack === "hell"
         ? "We are back near the disk and I was having such a good time away from it"
-        : gameProgress.records["boot-sequence"]?.complete
+        : isBootComplete(gameProgress)
         ? "Pick a file and I will supervise from a legally safe distance"
-        : "Boot Sequence first because the desktop is currently held together by error messages",
+        : "Finish the five Boot Sequence stages because the desktop is currently held together by error messages",
       mood: campaignPack === "hell"
         ? "worried"
-        : gameProgress.records["boot-sequence"]?.complete ? "idle" : "smug",
+        : isBootComplete(gameProgress) ? "idle" : "smug",
     });
   }
 
@@ -1364,7 +1433,7 @@ export function App() {
 
   async function exitChallenge() {
     cancelChallengeCelebration();
-    if (activeChallengeId && rows.length) {
+    if (activeChallengeId && (rows.length || dataBin.length)) {
       await saveWorkspace(`challenge:${activeChallengeId}`, createCurrentWorkspaceSnapshot()).catch(() => {});
     }
     const normalWorkspace = await loadWorkspace("normal").catch(() => null);
@@ -1377,7 +1446,7 @@ export function App() {
   }
 
   function clearLoadedFile() {
-    if (!rows.length) return;
+    if (!rows.length && !dataBin.length) return;
     requestConfirmation({
       title: "Clear loaded file?",
       message: `Remove "${fileName}" and its autosaved workspace from this browser? Export the CSV first if you want to keep your changes.`,
@@ -1410,9 +1479,10 @@ export function App() {
     setSelectedRelationshipFixes([]);
     setIsRelationshipPanelOpen(false);
     setHistory({ past: [], future: [] });
-    setCapturedRecipeSteps([]);
+    setDataBin([]);
     setShowIssueRowsOnly(false);
-    setRecipePreview(null);
+    setSelectedGridRowIds([]);
+    setSelectedBinEntryIds([]);
     setActiveChallengeId("");
     setChallengeEvaluation(null);
     setRunStats(createRunStats());
@@ -1473,11 +1543,7 @@ export function App() {
       ...action,
       actionId: action.actionId ?? crypto.randomUUID(),
       occurredAt: action.occurredAt ?? new Date().toISOString(),
-      ...(action.recipeStep ? { captureId: action.captureId ?? crypto.randomUUID() } : {}),
     };
-    if (nextAction.recipeStep) {
-      setCapturedRecipeSteps((currentSteps) => [...currentSteps, { ...nextAction.recipeStep, captureId: nextAction.captureId }]);
-    }
     const canStore = canStoreHistoryAction(nextAction);
     setHistory((current) => ({
       past: canStore ? appendHistoryAction(current.past, nextAction).actions : [],
@@ -1489,14 +1555,14 @@ export function App() {
       setRunStats((current) => ({
         ...current,
         moves: current.moves + 1,
-        deletedRows: current.deletedRows + getDeletedRowCount(nextAction),
+        binnedRows: current.binnedRows + getBinnedRowCount(nextAction),
         largestChange: Math.max(current.largestChange, changeSize),
       }));
     }
     if (activeChallenge) {
-      if (nextAction.kind === "deleteRows") postOfficeMessage(activeChallenge, "delete");
+      if (nextAction.kind === "moveRowsToBin") postOfficeMessage(activeChallenge, "delete");
       else if (nextAction.kind === "schema") postOfficeMessage(activeChallenge, "schema");
-      else if (nextAction.feedback?.kind === "formula" || nextAction.recipeStep?.type === "relationshipFix") {
+      else if (nextAction.feedback?.kind === "formula" || nextAction.audit?.type === "relationshipFix" || nextAction.audit?.type === "lookupFix") {
         postOfficeMessage(activeChallenge, "formula");
       }
     }
@@ -1524,14 +1590,13 @@ export function App() {
     const action = history.past.at(-1);
     if (!action) return;
     applyHistoryAction(action, "undo");
-    if (action.captureId) setCapturedRecipeSteps((steps) => steps.filter((step) => step.captureId !== action.captureId));
     setHistory((current) => ({ past: current.past.slice(0, -1), future: [...current.future, action] }));
     if (activeChallenge) {
       setRunStats((current) => ({
         ...current,
         moves: isScoreableAction(action) ? Math.max(0, current.moves - 1) : current.moves,
         undoCount: current.undoCount + 1,
-        deletedRows: Math.max(0, current.deletedRows - getDeletedRowCount(action)),
+        binnedRows: Math.max(0, current.binnedRows - getBinnedRowCount(action)),
       }));
       setClipbitReaction((current) => current.mood === "alarmed"
         ? current
@@ -1546,9 +1611,6 @@ export function App() {
     const action = history.future.at(-1);
     if (!action) return;
     applyHistoryAction(action, "redo");
-    if (action.captureId && action.recipeStep) {
-      setCapturedRecipeSteps((steps) => [...steps, { ...action.recipeStep, captureId: action.captureId }]);
-    }
     setHistory((current) => ({
       past: appendHistoryAction(current.past, action).actions,
       future: current.future.slice(0, -1),
@@ -1557,7 +1619,7 @@ export function App() {
       setRunStats((current) => ({
         ...current,
         moves: current.moves + 1,
-        deletedRows: current.deletedRows + getDeletedRowCount(action),
+        binnedRows: current.binnedRows + getBinnedRowCount(action),
       }));
     }
     const feedback = createActionFeedback(action, "redo");
@@ -1580,6 +1642,22 @@ export function App() {
       setRows((currentRows) => direction === "undo"
         ? restoreDeletedRows(currentRows, action.rows)
         : currentRows.filter((row) => !deletedIds.has(row.__rowId)));
+      return;
+    }
+    if (["moveRowsToBin", "restoreRowsFromBin"].includes(action.kind)) {
+      const shouldMove = action.kind === "moveRowsToBin" ? direction === "redo" : direction === "undo";
+      const entryIds = new Set(action.entries.map((entry) => entry.id));
+      const rowIds = new Set(action.entries.map((entry) => entry.row.__rowId));
+      if (shouldMove) {
+        setRows((currentRows) => currentRows.filter((row) => !rowIds.has(row.__rowId)));
+        setDataBin((currentEntries) => {
+          const existingIds = new Set(currentEntries.map((entry) => entry.id));
+          return [...currentEntries, ...action.entries.filter((entry) => !existingIds.has(entry.id))];
+        });
+      } else {
+        setRows((currentRows) => restoreEntriesFromBin(currentRows, [], action.entries, columns).rows);
+        setDataBin((currentEntries) => currentEntries.filter((entry) => !entryIds.has(entry.id)));
+      }
       return;
     }
     if (action.kind === "schema") {
@@ -1659,7 +1737,7 @@ export function App() {
           label: "Find & Replace",
           kind: "cells",
           changes,
-          recipeStep: { type: "findReplace", columns: [...visibleColumns], ...findReplaceDraft },
+          audit: { type: "findReplace", columns: [...visibleColumns], ...findReplaceDraft },
         });
         clearDerivedResults();
         setIsCleaningToolsOpen(false);
@@ -1721,8 +1799,6 @@ export function App() {
         columns: draft.columns.filter((column) => columns.includes(column)),
       }));
     }
-    setRecipeMessage("");
-    setRecipePreview(null);
     setActiveCleaningTool(tool);
     setIsCleaningToolsOpen(true);
   }
@@ -1784,24 +1860,98 @@ export function App() {
     });
   }
 
+  function commitRowsToDataBin(rowIds, { label, reason, sourceAction, audit }) {
+    const uniqueRowIds = [...new Set(rowIds)].filter(Boolean);
+    const entries = createBinEntries(rows, uniqueRowIds, { columns, reason, sourceAction });
+    if (!entries.length) return 0;
+    const next = moveEntriesToBin(rows, dataBin, entries);
+    setRows(next.rows);
+    setDataBin(next.dataBin);
+    setSelectedGridRowIds([]);
+    gridRef.current?.api?.deselectAll();
+    pushHistory({ label, kind: "moveRowsToBin", entries, audit });
+    clearDerivedResults();
+    if (activeChallenge && next.rows.length === 0) triggerChallengeRowWipeout(activeChallenge.id);
+    return entries.length;
+  }
+
+  function triggerChallengeRowWipeout(challengeId) {
+    if (!challengeId || isRowWipeoutSceneOpen) return;
+    playSound("error");
+    setRowWipeoutChallengeId(challengeId);
+    setIsClipbitMinimized(false);
+    setClipbitReaction({
+      message: "CONGRATS, you actually did it, you got rid of the problem at its roots and also got rid of the roots",
+      mood: "smug",
+    });
+    setIsRowWipeoutSceneOpen(true);
+  }
+
+  async function restartAfterRowWipeout() {
+    if (!rowWipeoutChallengeId) return;
+    const challengeId = rowWipeoutChallengeId;
+    setRowWipeoutChallengeId("");
+    setIsRowWipeoutSceneOpen(false);
+    await openChallenge(challengeId, true);
+    setIsClipbitMinimized(false);
+    setClipbitReaction({
+      message: "That was not data cleaning, that was data disappearance, please do not do that again",
+      mood: "angry",
+    });
+  }
+
+  function moveSelectedRowsToDataBin() {
+    if (!selectedGridRowIds.length) return;
+    requestConfirmation({
+      title: "Move selected rows to Data Bin?",
+      message: `Move ${selectedGridRowIds.length.toLocaleString()} selected row${selectedGridRowIds.length === 1 ? "" : "s"} out of the active table? You can restore them from Cleaning Tools`,
+      confirmLabel: "Move to Data Bin",
+      tone: "danger",
+      onConfirm: () => commitRowsToDataBin(selectedGridRowIds, {
+        label: "Move selected rows to Data Bin",
+        reason: "Moved manually",
+        sourceAction: "manual selection",
+        audit: { type: "moveRowsToBin", source: "manual" },
+      }),
+    });
+  }
+
+  function restoreDataBinEntries(entryIds) {
+    const selectedIds = new Set(entryIds);
+    const entries = dataBin.filter((entry) => selectedIds.has(entry.id));
+    if (!entries.length) return;
+    const archivedColumns = [...new Set(entries.flatMap((entry) => getArchivedColumns(entry, columns)))];
+    requestConfirmation({
+      title: "Restore rows from Data Bin?",
+      message: `Restore ${entries.length.toLocaleString()} row${entries.length === 1 ? "" : "s"} near their original positions${archivedColumns.length ? `? Archived columns will stay in the Bin export: ${archivedColumns.join(", ")}` : "?"}`,
+      confirmLabel: "Restore rows",
+      tone: "default",
+      onConfirm: () => {
+        const next = restoreEntriesFromBin(rows, dataBin, entries, columns);
+        setRows(next.rows);
+        setDataBin(next.dataBin);
+        setSelectedBinEntryIds([]);
+        pushHistory({ label: "Restore rows from Data Bin", kind: "restoreRowsFromBin", entries, audit: { type: "restoreRowsFromBin" } });
+        clearDerivedResults();
+      },
+    });
+  }
+
   function applyDuplicateRemoval() {
     const plan = buildDuplicatePlan(rows, duplicateDraft, true);
     if (!plan.valid || !plan.deleteCount) return;
     requestConfirmation({
-      title: "Remove duplicate rows?",
-      message: `Remove ${plan.deleteCount.toLocaleString()} row${plan.deleteCount === 1 ? "" : "s"} from ${plan.groupCount.toLocaleString()} duplicate group${plan.groupCount === 1 ? "" : "s"}?`,
-      confirmLabel: "Remove duplicates",
+      title: "Move duplicate rows to Data Bin?",
+      message: `Move ${plan.deleteCount.toLocaleString()} row${plan.deleteCount === 1 ? "" : "s"} from ${plan.groupCount.toLocaleString()} duplicate group${plan.groupCount === 1 ? "" : "s"}?`,
+      confirmLabel: "Move duplicates",
       tone: "danger",
       onConfirm: () => {
-        const deletedIds = new Set(plan.deletedRows.map((item) => item.row.__rowId));
-        setRows((currentRows) => currentRows.filter((row) => !deletedIds.has(row.__rowId)));
-        pushHistory({
-          label: "Remove duplicates",
-          kind: "deleteRows",
-          rows: plan.deletedRows,
-          recipeStep: { type: "deduplicate", ...duplicateDraft, columns: [...duplicateDraft.columns] },
+        commitRowsToDataBin(plan.deletedRows.map((item) => item.row.__rowId), {
+          label: "Move duplicates to Data Bin",
+          reason: `Duplicate on ${duplicateDraft.columns.join(", ")} and kept ${duplicateDraft.keep}`,
+          sourceAction: "duplicate cleanup",
+          audit: { type: "deduplicate", ...duplicateDraft, columns: [...duplicateDraft.columns] },
         });
-        clearDerivedResults();
         setIsCleaningToolsOpen(false);
       },
     });
@@ -1821,7 +1971,7 @@ export function App() {
           label: "Clean text",
           kind: "cells",
           changes: plan.changes,
-          recipeStep: { type: "textCleanup", ...textCleanupDraft, columns: [...textCleanupDraft.columns] },
+          audit: { type: "textCleanup", ...textCleanupDraft, columns: [...textCleanupDraft.columns] },
         });
         clearDerivedResults();
         setIsCleaningToolsOpen(false);
@@ -1913,7 +2063,7 @@ export function App() {
     const nextSelectedColumn = addedColumns[0]
       ?? (nextColumns.includes(selectedColumn) ? selectedColumn : nextColumns[0] ?? "");
     const confirmationMessage = operation.type === "deleteColumns"
-      ? `Delete ${removedColumns.length.toLocaleString()} column${removedColumns.length === 1 ? "" : "s"} across ${rows.length.toLocaleString()} rows${removedRelationships.length ? ` and remove ${removedRelationships.length.toLocaleString()} connected formula rule${removedRelationships.length === 1 ? "" : "s"}` : ""}?`
+      ? `Delete ${removedColumns.length.toLocaleString()} column${removedColumns.length === 1 ? "" : "s"} across ${rows.length.toLocaleString()} rows${removedRelationships.length ? ` and remove ${removedRelationships.length.toLocaleString()} connected relation${removedRelationships.length === 1 ? "" : "s"}` : ""}?`
       : operation.type === "createColumn"
         ? `Create "${operation.column}" across ${rows.length.toLocaleString()} row${rows.length === 1 ? "" : "s"}?`
         : `${label} across ${rows.length.toLocaleString()} row${rows.length === 1 ? "" : "s"}${operation.removeSources ? " and remove the source columns" : ""}?`;
@@ -1938,7 +2088,7 @@ export function App() {
           removedColumns,
           before: { columns, visibleColumns, columnRules, relationshipRules, selectedColumn },
           after: { columns: nextColumns, visibleColumns: nextVisibleColumns, columnRules: nextRules, relationshipRules: nextRelationships, selectedColumn: nextSelectedColumn },
-          recipeStep: operation,
+          audit: operation,
         });
         setRows((currentRows) => applySchemaTransformToRows(currentRows, operation));
         setColumns(nextColumns);
@@ -1954,351 +2104,6 @@ export function App() {
         setIsCleaningToolsOpen(false);
       },
     });
-  }
-
-  function saveCurrentRecipe() {
-    if (!recipeName.trim()) {
-      setRecipeMessage("Give the recipe a name first.");
-      return;
-    }
-    const resolvedRules = Object.fromEntries(columns.map((column) => {
-      const rule = resolveColumnRule(columnRules[column] ?? createColumnRule("Text"), regexRuleLibrary);
-      return [column, { ...rule, savedRegexId: "" }];
-    }));
-    for (const step of capturedRecipeSteps) {
-      for (const [column, rule] of Object.entries(step.rules ?? {})) {
-        if (!resolvedRules[column]) resolvedRules[column] = cloneSerializable(rule);
-      }
-    }
-    const regexRules = Object.values(resolvedRules)
-      .filter((rule) => isCustomRegexMode(rule) && rule.customPattern)
-      .map((rule) => ({ label: rule.customPatternLabel || "Custom regex", pattern: rule.customPattern, matchMode: rule.matchMode ?? "full" }));
-    const steps = capturedRecipeSteps.map(({ captureId: _captureId, ...step }) => step);
-    try {
-      const recipe = createRecipe({
-        name: recipeName,
-        columns,
-        columnRules: resolvedRules,
-        regexRules,
-        relationships: relationshipRules,
-        steps,
-      });
-      setSavedRecipes((recipes) => [...recipes, recipe]);
-      setCapturedRecipeSteps([]);
-      setRecipeName("");
-      setRecipeMessage(`Saved "${recipe.name}".`);
-    } catch (error) {
-      setRecipeMessage(error instanceof Error ? error.message : "Recipe could not be saved.");
-    }
-  }
-
-  function removeCapturedRecipeStep(captureId) {
-    setCapturedRecipeSteps((steps) => steps.filter((step) => step.captureId !== captureId));
-  }
-
-  function reorderCapturedRecipeStep(index, direction) {
-    setCapturedRecipeSteps((steps) => moveRecipeStep(steps, index, direction));
-  }
-
-  function previewRecipe(recipe) {
-    setRecipeMessage("");
-    const validation = validateRecipe(recipe);
-    if (!validation.valid) {
-      setRecipePreview({ recipe, valid: false, error: validation.error });
-      return;
-    }
-    if (!rows.length) {
-      setRecipePreview({ recipe, valid: false, error: "Load a CSV before running this recipe." });
-      return;
-    }
-    setRecipePreview({ recipe, ...buildRecipeApplication(recipe) });
-  }
-
-  function applyPreviewedRecipe() {
-    if (!recipePreview?.valid) return;
-    requestConfirmation({
-      title: `Apply ${recipePreview.recipe.name}?`,
-      message: `Run ${recipePreview.recipe.steps.length.toLocaleString()} recipe step${recipePreview.recipe.steps.length === 1 ? "" : "s"} in order? The complete recipe can be undone as one change.`,
-      confirmLabel: "Apply recipe",
-      tone: "default",
-      onConfirm: () => {
-        const result = recipePreview;
-        setRows(result.state.rows);
-        setColumns(result.state.columns);
-        setVisibleColumns(result.state.visibleColumns);
-        setColumnRules(result.state.columnRules);
-        setRelationshipRules(result.state.relationshipRules);
-        setSelectedColumn(result.state.selectedColumn);
-        pushHistory(result.historyAction);
-        clearDerivedResults();
-        setRecipePreview(null);
-        setIsCleaningToolsOpen(false);
-      },
-    });
-  }
-
-  function buildRecipeApplication(recipe) {
-    let workingRows = rows;
-    let workingColumns = [...columns];
-    let workingVisible = [...visibleColumns];
-    let workingRules = { ...columnRules };
-    let workingRelationships = mergeRelationshipRules(relationshipRules, recipe.relationships);
-    let workingSelected = selectedColumn;
-    const actions = [];
-    const summary = [];
-    const recipeRelationshipById = new Map(recipe.relationships.map((rule) => [rule.id, rule]));
-
-    for (const [column, rule] of Object.entries(recipe.columnRules)) {
-      if (workingColumns.includes(column)) workingRules[column] = cloneSerializable(rule);
-    }
-    actions.push({
-      kind: "config",
-      before: { columnRules, relationshipRules },
-      after: { columnRules: workingRules, relationshipRules: workingRelationships },
-    });
-
-    for (const step of recipe.steps) {
-      const stepColumns = getRecipeStepColumns(step);
-      const missingColumn = stepColumns.find((column) => !workingColumns.includes(column));
-      if (missingColumn) return { valid: false, error: `${getRecipeStepLabel(step)} needs missing column "${missingColumn}".` };
-
-      if (step.type === "findReplace") {
-        const matcher = createFindMatcher(step);
-        if (!matcher.valid) return { valid: false, error: `Find & Replace: ${matcher.error}` };
-        const changes = [];
-        for (const row of workingRows) {
-          for (const column of step.columns) {
-            const before = String(row[column] ?? "");
-            const after = matcher.replace(before, step.replace);
-            if (after !== before) changes.push({ rowId: row.__rowId, column, before: row[column], after });
-          }
-        }
-        if (changes.length) {
-          workingRows = applyCellChanges(workingRows, changes, "redo");
-          actions.push({ kind: "cells", changes });
-        }
-        summary.push({ label: "Find & Replace", count: changes.length, unit: "cells" });
-        continue;
-      }
-
-      if (step.type === "textCleanup") {
-        const plan = buildTextCleanupPlan(workingRows, step, true);
-        if (!plan.valid) return { valid: false, error: `Text Cleanup: ${plan.error}` };
-        if (plan.changes.length) {
-          workingRows = applyCellChanges(workingRows, plan.changes, "redo");
-          actions.push({ kind: "cells", changes: plan.changes });
-        }
-        summary.push({ label: "Text Cleanup", count: plan.changeCount, unit: "cells" });
-        continue;
-      }
-
-      if (step.type === "deduplicate") {
-        const plan = buildDuplicatePlan(workingRows, step, true);
-        if (!plan.valid) return { valid: false, error: `Duplicates: ${plan.error}` };
-        if (plan.deletedRows.length) {
-          const deletedIds = new Set(plan.deletedRows.map((item) => item.row.__rowId));
-          workingRows = workingRows.filter((row) => !deletedIds.has(row.__rowId));
-          actions.push({ kind: "deleteRows", rows: plan.deletedRows });
-        }
-        summary.push({ label: "Duplicates", count: plan.deleteCount, unit: "rows" });
-        continue;
-      }
-
-      if (step.type === "fill") {
-        let stepChangeCount = 0;
-        for (const column of step.columns) {
-          const rule = resolveColumnRule(workingRules[column] ?? createColumnRule("Text"), regexRuleLibrary);
-          const plan = calculateColumnFill(workingRows, {
-            ...step,
-            column,
-            type: rule.type,
-            isValid: (value) => validateValue(value, rule).valid,
-            isMissing: (value) => isMissingValue(value, rule),
-            isIgnoredMissing: (value, row) => isMissingValue(value, rule) && !getMissingIssue(row, column, rule),
-          }, true);
-          if (!plan.valid) return { valid: false, error: `Fill ${column}: ${plan.error}` };
-          if (plan.changes.length) {
-            workingRows = applyCellChanges(workingRows, plan.changes, "redo");
-            actions.push({ kind: "cells", changes: plan.changes });
-            stepChangeCount += plan.changes.length;
-          }
-        }
-        summary.push({ label: "Fill Issues", count: stepChangeCount, unit: "cells" });
-        continue;
-      }
-
-      if (step.type === "numericConversion") {
-        const plan = buildNumericConversionChanges(workingRows, step.column, step.targetType);
-        const rulesBeforeConversion = workingRules;
-        if (plan.changes.length) {
-          workingRows = applyCellChanges(workingRows, plan.changes, "redo");
-          actions.push({ kind: "cells", changes: plan.changes });
-        }
-        workingRules = { ...workingRules, [step.column]: createColumnRule(step.targetType) };
-        actions.push({
-          kind: "config",
-          before: { columnRules: rulesBeforeConversion, relationshipRules: workingRelationships },
-          after: { columnRules: workingRules, relationshipRules: workingRelationships },
-        });
-        summary.push({ label: "Numeric conversion", count: plan.changes.length, unit: "cells" });
-        continue;
-      }
-
-      if (step.type === "dateConversion") {
-        const plan = buildDateConversionChanges(
-          workingRows,
-          step.column,
-          step.sourcePresetId,
-          step.targetPresetId,
-        );
-        if (!plan.valid) return { valid: false, error: `Date conversion: ${plan.error}` };
-        if (plan.changes.length) {
-          workingRows = applyCellChanges(workingRows, plan.changes, "redo");
-          actions.push({ kind: "cells", changes: plan.changes });
-        }
-        summary.push({ label: "Date conversion", count: plan.changeCount, unit: "cells" });
-        continue;
-      }
-
-      if (step.type === "relationshipFix") {
-        const fixes = [];
-        for (const relationshipId of step.relationshipIds ?? []) {
-          const rule = recipeRelationshipById.get(relationshipId);
-          if (!rule) return { valid: false, error: `Relationship "${relationshipId}" is missing from the recipe.` };
-          const validation = validateRelationshipRule(rule, workingColumns);
-          if (!validation.valid) return { valid: false, error: `${rule.name}: ${validation.error}` };
-          fixes.push(...checkRelationshipRows(workingRows, rule, validation.ast, workingRules).filter((issue) => issue.fixable));
-        }
-        const uniqueFixes = new Map(fixes.map((issue) => [`${issue.rowId}:${issue.targetColumn}`, issue]));
-        const rowsById = new Map(workingRows.map((row) => [row.__rowId, row]));
-        const changes = [...uniqueFixes.values()].map((issue) => {
-          const row = rowsById.get(issue.rowId);
-          return { rowId: issue.rowId, column: issue.targetColumn, before: row?.[issue.targetColumn] ?? "", after: issue.suggestedValue };
-        });
-        if (changes.length) {
-          workingRows = applyCellChanges(workingRows, changes, "redo");
-          actions.push({ kind: "cells", changes });
-        }
-        summary.push({ label: "Relationship fixes", count: changes.length, unit: "cells" });
-        continue;
-      }
-
-      if (step.type === "deleteInvalidRows") {
-        const rules = Object.fromEntries(step.columns.map((column) => [column, resolveColumnRule(workingRules[column] ?? createColumnRule("Text"), regexRuleLibrary)]));
-        const issues = validateRows(workingRows.map((row) => pickColumns(row, step.columns)), rules);
-        const issueIds = new Set(issues.map((issue) => issue.rowId));
-        const deletedRows = workingRows.map((row, index) => ({ row, index })).filter(({ row }) => issueIds.has(row.__rowId));
-        if (deletedRows.length) {
-          workingRows = workingRows.filter((row) => !issueIds.has(row.__rowId));
-          actions.push({ kind: "deleteRows", rows: deletedRows });
-        }
-        summary.push({ label: "Delete invalid rows", count: deletedRows.length, unit: "rows" });
-        continue;
-      }
-
-      if (["createColumn", "deleteColumns", "splitColumn", "combineColumns"].includes(step.type)) {
-        const validation = validateSchemaOperation(workingColumns, step);
-        if (!validation.valid) return { valid: false, error: `${getRecipeStepLabel(step)}: ${validation.error}` };
-        if (step.type === "createColumn") {
-          const valueValidation = validateCreateColumnValue(step);
-          if (!valueValidation.valid) return { valid: false, error: `${getRecipeStepLabel(step)}: ${valueValidation.error}` };
-        }
-        const metadata = getSchemaOperationColumns(workingColumns, workingVisible, step);
-        const nextRules = { ...workingRules };
-        for (const column of metadata.removedColumns) delete nextRules[column];
-        for (const column of metadata.addedColumns) {
-          nextRules[column] = cloneSerializable(
-            recipe.columnRules[column]
-              ?? createColumnRule(step.type === "createColumn" ? step.dataType : "Text"),
-          );
-        }
-        const removedColumnSet = new Set(metadata.removedColumns);
-        const nextRelationships = workingRelationships.filter((rule) => (
-          !getRelationshipRuleColumns(rule).some((column) => removedColumnSet.has(column))
-        ));
-        const nextSelected = metadata.addedColumns[0]
-          ?? (metadata.nextColumns.includes(workingSelected) ? workingSelected : metadata.nextColumns[0] ?? "");
-        const schemaAction = createSchemaHistoryAction({
-          label: getRecipeStepLabel(step),
-          operation: step,
-          rows: workingRows,
-          addedColumns: metadata.addedColumns,
-          removedColumns: metadata.removedColumns,
-          before: { columns: workingColumns, visibleColumns: workingVisible, columnRules: workingRules, relationshipRules: workingRelationships, selectedColumn: workingSelected },
-          after: { columns: metadata.nextColumns, visibleColumns: metadata.nextVisibleColumns, columnRules: nextRules, relationshipRules: nextRelationships, selectedColumn: nextSelected },
-        });
-        workingRows = applySchemaTransformToRows(workingRows, step);
-        workingColumns = metadata.nextColumns;
-        workingVisible = metadata.nextVisibleColumns;
-        workingRules = nextRules;
-        workingRelationships = nextRelationships;
-        workingSelected = nextSelected;
-        actions.push(schemaAction);
-        summary.push({ label: getRecipeStepLabel(step), count: workingRows.length, unit: "rows" });
-      }
-    }
-
-    return {
-      valid: true,
-      summary,
-      state: {
-        rows: workingRows,
-        columns: workingColumns,
-        visibleColumns: workingVisible,
-        columnRules: workingRules,
-        relationshipRules: workingRelationships,
-        selectedColumn: workingSelected && workingColumns.includes(workingSelected) ? workingSelected : workingColumns[0] ?? "",
-      },
-      historyAction: { label: `Apply recipe: ${recipe.name}`, kind: "compound", actions },
-    };
-  }
-
-  async function importRecipe(event) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    const parsed = parseRecipeJson(await file.text(), savedRecipes);
-    if (!parsed.valid) {
-      setRecipeMessage(parsed.error);
-      return;
-    }
-    setSavedRecipes((recipes) => [...recipes, parsed.recipe]);
-    setRecipeMessage(`Imported "${parsed.recipe.name}".`);
-  }
-
-  function exportRecipe(recipe) {
-    downloadText(serializeRecipe(recipe), `${toFileName(recipe.name)}.json`, "application/json;charset=utf-8");
-  }
-
-  function duplicateRecipe(recipe) {
-    const copy = { ...cloneSerializable(recipe), id: crypto.randomUUID(), name: `${recipe.name} copy`, createdAt: new Date().toISOString() };
-    setSavedRecipes((recipes) => [...recipes, copy]);
-  }
-
-  function deleteRecipe(recipe) {
-    requestConfirmation({
-      title: `Delete ${recipe.name}?`,
-      message: "Delete this saved recipe from this browser? Export it first if you may need it later.",
-      confirmLabel: "Delete recipe",
-      tone: "danger",
-      onConfirm: () => {
-        setSavedRecipes((recipes) => recipes.filter((item) => item.id !== recipe.id));
-        if (recipePreview?.recipe.id === recipe.id) setRecipePreview(null);
-      },
-    });
-  }
-
-  function beginRenameRecipe(recipe) {
-    setRenamingRecipeId(recipe.id);
-    setRenamingRecipeName(recipe.name);
-  }
-
-  function saveRecipeName(recipeId) {
-    const name = renamingRecipeName.trim();
-    if (!name) return;
-    setSavedRecipes((recipes) => recipes.map((recipe) => recipe.id === recipeId ? { ...recipe, name } : recipe));
-    setRenamingRecipeId("");
-    setRenamingRecipeName("");
   }
 
   function snapshotColumnRules(columnNames, sourceRules = columnRules) {
@@ -2509,7 +2314,219 @@ export function App() {
   }
 
   function updateRelationshipDraft(field, value) {
-    setRelationshipDraft((currentDraft) => ({ ...currentDraft, [field]: value }));
+    if (["kind", "sourceColumn", "targetColumn"].includes(field)) {
+      lookupAnalysisAbortRef.current?.abort();
+      setLookupPreview(null);
+      setLookupFinder(null);
+      setLookupAnalysisProgress(null);
+    }
+    setRelationshipDraft((currentDraft) => {
+      if (field === "kind") {
+        return {
+          ...currentDraft,
+          kind: value,
+          sourceColumn: "",
+          targetColumn: "",
+          formula: "",
+          lookupDirection: "none",
+        };
+      }
+      if (field === "sourceColumn" && currentDraft.kind === "lookup") {
+        return { ...currentDraft, sourceColumn: value, targetColumn: "", lookupDirection: "none" };
+      }
+      return { ...currentDraft, [field]: value };
+    });
+  }
+
+  function getLookupAnalysisOptions(
+    sourceColumn,
+    targetColumn,
+    collectIssues = true,
+    issueLimit = Number.POSITIVE_INFINITY,
+    mappingLimit = collectIssues ? 25 : 0,
+    repairLimit = collectIssues ? 25 : 0,
+  ) {
+    const sourceRule = { ...relationshipColumnRules[sourceColumn], column: sourceColumn };
+    const targetRule = { ...relationshipColumnRules[targetColumn], column: targetColumn };
+    return {
+      sourceRule,
+      targetRule,
+      collectIssues,
+      issueLimit,
+      mappingLimit,
+      repairLimit,
+      isMissing: (value, columnRule, row) => Boolean(getMissingIssue(row, columnRule.column, columnRule)),
+      isValid: (value, columnRule, row) => (
+        isMissingValue(value, columnRule)
+          ? !getMissingIssue(row, columnRule.column, columnRule)
+          : validateValue(value, columnRule).valid
+      ),
+    };
+  }
+
+  function analyzeLookupDirection(rule, sourceColumn, targetColumn, collectIssues = true, dataRows = rows) {
+    return checkLookupRows(
+      dataRows,
+      { ...rule, sourceColumn, targetColumn },
+      getLookupAnalysisOptions(sourceColumn, targetColumn, collectIssues),
+    );
+  }
+
+  function analyzeLookupDirectionInChunks(rule, sourceColumn, targetColumn, controller, onProgress) {
+    return checkLookupRowsInChunks(
+      rows,
+      { ...rule, sourceColumn, targetColumn },
+      getLookupAnalysisOptions(sourceColumn, targetColumn, false, 0, 30, 30),
+      { signal: controller.signal, onProgress },
+    );
+  }
+
+  async function findLogicalRelations() {
+    const anchorColumn = relationshipDraft.sourceColumn;
+    const candidateColumns = visibleColumns.filter((column) => column !== anchorColumn);
+    if (relationshipDraft.kind !== "lookup" || !anchorColumn || !candidateColumns.length) return;
+
+    lookupAnalysisAbortRef.current?.abort();
+    const controller = new AbortController();
+    lookupAnalysisAbortRef.current = controller;
+    const sampledRows = sampleLookupRows(rows);
+    const foundCandidates = [];
+    setRelationshipDraft((currentDraft) => ({ ...currentDraft, targetColumn: "", lookupDirection: "none" }));
+    setLookupPreview(null);
+    setLookupFinder({
+      rows,
+      columnRules,
+      visibleColumns,
+      anchorColumn,
+      sampleSize: sampledRows.length,
+      totalRows: rows.length,
+      results: [],
+      status: "finding",
+    });
+    setLookupAnalysisProgress({ mode: "finding", progress: 0, label: "Comparing visible columns" });
+
+    try {
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+      for (let index = 0; index < candidateColumns.length; index += 1) {
+        if (controller.signal.aborted) throw new DOMException("Operation cancelled", "AbortError");
+        const candidateColumn = candidateColumns[index];
+        const forward = analyzeLookupDirection(
+          relationshipDraft,
+          anchorColumn,
+          candidateColumn,
+          false,
+          sampledRows,
+        );
+        const reverse = analyzeLookupDirection(
+          relationshipDraft,
+          candidateColumn,
+          anchorColumn,
+          false,
+          sampledRows,
+        );
+        foundCandidates.push({
+          column: candidateColumn,
+          forward,
+          reverse,
+          recommendation: recommendLookupDirection(forward, reverse),
+        });
+        const progress = (index + 1) / candidateColumns.length;
+        setLookupAnalysisProgress({ mode: "finding", progress, label: `Checked ${index + 1} of ${candidateColumns.length} columns` });
+        if ((index + 1) % 2 === 0 || index === candidateColumns.length - 1) {
+          setLookupFinder({
+            rows,
+            columnRules,
+            visibleColumns,
+            anchorColumn,
+            sampleSize: sampledRows.length,
+            totalRows: rows.length,
+            results: rankLookupCandidates(foundCandidates),
+            status: index === candidateColumns.length - 1 ? "ready" : "finding",
+          });
+        }
+        if (index < candidateColumns.length - 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 0));
+        }
+      }
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        setLookupFinder((currentFinder) => currentFinder && { ...currentFinder, status: "error", error: error.message });
+      }
+    } finally {
+      if (lookupAnalysisAbortRef.current === controller) {
+        lookupAnalysisAbortRef.current = null;
+        setLookupAnalysisProgress(null);
+      }
+    }
+  }
+
+  async function verifyLogicalRelation(candidateColumn) {
+    const anchorColumn = relationshipDraft.sourceColumn;
+    if (relationshipDraft.kind !== "lookup" || !anchorColumn || !candidateColumn) return;
+    lookupAnalysisAbortRef.current?.abort();
+    const controller = new AbortController();
+    lookupAnalysisAbortRef.current = controller;
+    const verificationRule = { ...relationshipDraft, sourceColumn: anchorColumn, targetColumn: candidateColumn };
+    let lastProgress = -1;
+    const reportProgress = (progress) => {
+      const percent = Math.round(progress * 100);
+      if (percent === lastProgress) return;
+      lastProgress = percent;
+      setLookupAnalysisProgress({
+        mode: "verifying",
+        progress,
+        label: `Verifying ${anchorColumn} and ${candidateColumn} on the full file`,
+      });
+    };
+    setRelationshipDraft((currentDraft) => ({
+      ...currentDraft,
+      targetColumn: candidateColumn,
+      lookupDirection: "none",
+    }));
+    setLookupPreview(null);
+    reportProgress(0);
+
+    try {
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+      const forward = await analyzeLookupDirectionInChunks(
+        verificationRule,
+        anchorColumn,
+        candidateColumn,
+        controller,
+        (progress) => reportProgress(progress / 2),
+      );
+      const reverse = await analyzeLookupDirectionInChunks(
+        verificationRule,
+        candidateColumn,
+        anchorColumn,
+        controller,
+        (progress) => reportProgress(0.5 + progress / 2),
+      );
+      const recommendation = recommendLookupDirection(forward, reverse);
+      setRelationshipDraft((currentDraft) => (
+        currentDraft.sourceColumn === anchorColumn
+          ? { ...currentDraft, targetColumn: candidateColumn, lookupDirection: recommendation }
+          : currentDraft
+      ));
+      setLookupPreview({
+        rows,
+        columnRules,
+        sourceColumn: anchorColumn,
+        targetColumn: candidateColumn,
+        forward,
+        reverse,
+        recommendation,
+      });
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        setLookupFinder((currentFinder) => currentFinder && { ...currentFinder, status: "error", error: error.message });
+      }
+    } finally {
+      if (lookupAnalysisAbortRef.current === controller) {
+        lookupAnalysisAbortRef.current = null;
+        setLookupAnalysisProgress(null);
+      }
+    }
   }
 
   function insertRelationshipColumn(column) {
@@ -2527,29 +2544,54 @@ export function App() {
   }
 
   function saveRelationshipRule() {
-    if (!relationshipDraftValidation.valid) return;
+    if (!canSaveRelationship) return;
+    const isLookup = relationshipDraft.kind === "lookup";
+    const lookupDirection = relationshipDraft.lookupDirection
+      ?? (relationshipDraft.bidirectional ? "both" : "forward");
+    const isBidirectional = isLookup && lookupDirection === "both";
+    const sourceColumn = isLookup && lookupDirection === "reverse"
+      ? relationshipDraft.targetColumn
+      : relationshipDraft.sourceColumn;
+    const targetColumn = isLookup && lookupDirection === "reverse"
+      ? relationshipDraft.sourceColumn
+      : relationshipDraft.targetColumn;
     const nextRule = {
       ...relationshipDraft,
       id: relationshipDraft.id || `relationship-${Date.now()}`,
-      name: relationshipDraft.name.trim() || `${relationshipDraft.targetColumn} calculation`,
-      formula: relationshipDraft.formula.trim(),
+      kind: isLookup ? "lookup" : "formula",
+      name: relationshipDraft.name.trim() || (isLookup
+        ? isBidirectional
+          ? `${sourceColumn} and ${targetColumn}`
+          : `${targetColumn} from ${sourceColumn}`
+        : `${relationshipDraft.targetColumn} calculation`),
+      sourceColumn,
+      targetColumn,
+      formula: isLookup ? "" : relationshipDraft.formula.trim(),
+      bidirectional: isBidirectional,
       enabled: relationshipDraft.enabled !== false,
     };
+    delete nextRule.lookupDirection;
     setRelationshipRules((currentRules) => (
       currentRules.some((rule) => rule.id === nextRule.id)
         ? currentRules.map((rule) => (rule.id === nextRule.id ? nextRule : rule))
         : [...currentRules, nextRule]
     ));
     setRelationshipDraft(EMPTY_RELATIONSHIP_DRAFT);
+    setLookupPreview(null);
+    setLookupFinder(null);
   }
 
   function editRelationshipRule(rule) {
-    setRelationshipDraft({ ...rule });
+    setRelationshipDraft({ ...rule, lookupDirection: rule.bidirectional ? "both" : "forward" });
+    setLookupPreview(null);
+    setLookupFinder(null);
     setIsRelationshipPanelOpen(true);
   }
 
   function duplicateRelationshipRule(rule) {
-    setRelationshipDraft({ ...rule, id: "", name: `${rule.name} copy` });
+    setRelationshipDraft({ ...rule, id: "", name: `${rule.name} copy`, lookupDirection: rule.bidirectional ? "both" : "forward" });
+    setLookupPreview(null);
+    setLookupFinder(null);
     setIsRelationshipPanelOpen(true);
   }
 
@@ -2567,7 +2609,20 @@ export function App() {
 
   function checkRelationshipRules(ruleId = null) {
     const rulesToCheck = relationshipRuleStates.filter((rule) => rule.enabled && rule.validation.valid && (!ruleId || rule.id === ruleId));
-    const nextIssues = rulesToCheck.flatMap((rule) => checkRelationshipRows(rows, rule, rule.validation.ast, relationshipColumnRules));
+    const nextIssues = rulesToCheck.flatMap((rule) => {
+      if (rule.kind !== "lookup") return checkRelationshipRows(rows, rule, rule.validation.ast, relationshipColumnRules);
+      const directions = [
+        { sourceColumn: rule.sourceColumn, targetColumn: rule.targetColumn },
+        ...(rule.bidirectional
+          ? [{ sourceColumn: rule.targetColumn, targetColumn: rule.sourceColumn }]
+          : []),
+      ];
+      return directions.flatMap((direction) => analyzeLookupDirection(
+        rule,
+        direction.sourceColumn,
+        direction.targetColumn,
+      ).issues);
+    });
     setRelationshipIssues((currentIssues) => {
       const retainedIssues = ruleId
         ? currentIssues.filter((issue) => issue.ruleId !== ruleId)
@@ -2594,7 +2649,9 @@ export function App() {
     const selectedRuleIds = [...new Set(selectedIssues.map((issue) => issue.ruleId))];
     const selectedRuleColumns = relationshipRuleStates
       .filter((rule) => selectedRuleIds.includes(rule.id))
-      .flatMap((rule) => [rule.targetColumn, ...(rule.validation.references ?? [])]);
+      .flatMap((rule) => getRelationshipRuleColumns(rule));
+    const selectedRules = relationshipRuleStates.filter((rule) => selectedRuleIds.includes(rule.id));
+    const includesLookup = selectedRules.some((rule) => rule.kind === "lookup");
     const fixesByRowId = new Map();
     for (const issue of selectedIssues) {
       const rowFixes = fixesByRowId.get(issue.rowId) ?? [];
@@ -2618,15 +2675,15 @@ export function App() {
       kind: "cells",
       changes,
       feedback: {
-        kind: "formula",
+        kind: includesLookup ? "lookup" : "formula",
         sourceColumns: [...new Set(
-          relationshipRuleStates
-            .filter((rule) => selectedRuleIds.includes(rule.id))
-            .flatMap((rule) => rule.validation.references ?? []),
+          selectedRules.flatMap((rule) => rule.kind === "lookup"
+            ? rule.bidirectional ? [rule.sourceColumn, rule.targetColumn] : [rule.sourceColumn]
+            : rule.validation.references ?? []),
         )],
         targetColumns: [...new Set(selectedIssues.map((issue) => issue.targetColumn))],
       },
-      recipeStep: { type: "relationshipFix", relationshipIds: selectedRuleIds, rules: snapshotColumnRules([...new Set(selectedRuleColumns)]) },
+      audit: { type: includesLookup ? "lookupFix" : "relationshipFix", relationshipIds: selectedRuleIds, rules: snapshotColumnRules([...new Set(selectedRuleColumns)]) },
     });
     setRelationshipIssues((currentIssues) => currentIssues.filter((issue) => !selectedRelationshipFixes.includes(issue.id)));
     setSelectedRelationshipFixes([]);
@@ -2674,6 +2731,8 @@ export function App() {
         scanIssues: allIssues,
         lastScannedAt: scannedAt,
         history: history.past,
+        dataBin,
+        relationshipRules,
       }, {
         signal: controller.signal,
         onProgress: (progress) => setScanProgress(0.75 + progress * 0.23),
@@ -2700,11 +2759,7 @@ export function App() {
         challenge: true,
       });
       if (shouldCelebrate) nextProgress = recordChallengeResult(nextProgress, activeChallenge, nextScore);
-      if (
-        shouldCelebrate
-        && activeChallenge.tutorial
-        && !gameProgress.records[activeChallenge.id]?.complete
-      ) {
+      if (shouldCelebrate && !isBootComplete(gameProgress) && isBootComplete(nextProgress)) {
         setCampaignPowerSequenceSignal((current) => current + 1);
       }
       const achievementResult = findNewAchievements(nextProgress, {
@@ -2809,9 +2864,9 @@ export function App() {
   function deleteRowsWithValidationIssues() {
     if (!validationIssueRowCount) return;
     requestConfirmation({
-      title: "Delete rows with issues?",
-      message: `Delete ${validationIssueRowCount.toLocaleString()} row${validationIssueRowCount === 1 ? "" : "s"} with validation issues? You can undo this change.`,
-      confirmLabel: "Delete rows",
+      title: "Move rows with issues to Data Bin?",
+      message: `Move ${validationIssueRowCount.toLocaleString()} row${validationIssueRowCount === 1 ? "" : "s"} with validation issues out of the active table? You can restore them later`,
+      confirmLabel: "Move to Data Bin",
       tone: "danger",
       onConfirm: performDeleteRowsWithValidationIssues,
     });
@@ -2819,16 +2874,14 @@ export function App() {
 
   function performDeleteRowsWithValidationIssues() {
     const issueRowIds = new Set(validationIssues.map((issue) => issue.rowId).filter(Boolean));
-    const deletedRows = rows
-      .map((row, index) => ({ row, index }))
-      .filter(({ row, index }) => issueRowIds.size ? issueRowIds.has(row.__rowId) : validationIssues.some((issue) => issue.row - 1 === index));
-    const deletedIds = new Set(deletedRows.map((item) => item.row.__rowId));
-    setRows(rows.filter((row) => !deletedIds.has(row.__rowId)));
-    if (deletedRows.length) pushHistory({
-      label: "Delete rows with issues",
-      kind: "deleteRows",
-      rows: deletedRows,
-      recipeStep: { type: "deleteInvalidRows", columns: [...visibleColumns], rules: snapshotColumnRules(visibleColumns) },
+    const rowIds = rows
+      .filter((row, index) => issueRowIds.size ? issueRowIds.has(row.__rowId) : validationIssues.some((issue) => issue.row - 1 === index))
+      .map((row) => row.__rowId);
+    commitRowsToDataBin(rowIds, {
+      label: "Move rows with issues to Data Bin",
+      reason: `Failed the latest scan in ${visibleColumns.join(", ")}`,
+      sourceAction: "validation issues",
+      audit: { type: "moveInvalidRowsToBin", columns: [...visibleColumns], rules: snapshotColumnRules(visibleColumns) },
     });
     setValidationIssues([]);
     setRelationshipIssues([]);
@@ -2873,16 +2926,26 @@ export function App() {
     }, collectChanges);
   }
 
-  function applyFillPlan() {
+  function applyFillPlan(confirmedEstimate = false) {
     const plan = buildCurrentFillPlan(true);
     if (!plan.valid || !plan.changes?.length) return;
     const methodLabel = fillMethods.find((method) => method.id === fillDraft.method)?.label ?? "Fill values";
+    if (!confirmedEstimate && !["custom", "customDate"].includes(fillDraft.method)) {
+      requestConfirmation({
+        title: `Apply ${methodLabel}?`,
+        message: `This will estimate ${plan.changes.length.toLocaleString()} value${plan.changes.length === 1 ? "" : "s"} from other rows. Continue only when this method fits the data`,
+        confirmLabel: "Apply estimate",
+        tone: "default",
+        onConfirm: () => applyFillPlan(true),
+      });
+      return;
+    }
     setRows((currentRows) => applyCellChanges(currentRows, plan.changes, "redo"));
     pushHistory({
       label: `${methodLabel}: ${fillDraft.column === ALL_ISSUE_COLUMNS ? "all issue columns" : fillDraft.column}`,
       kind: "cells",
       changes: plan.changes,
-      recipeStep: {
+      audit: {
         type: "fill",
         columns: fillDraft.column === ALL_ISSUE_COLUMNS ? [...fillIssueColumns] : [fillDraft.column],
         scope: fillDraft.scope,
@@ -2951,7 +3014,7 @@ export function App() {
         { kind: "cells", changes: conversionChanges },
         { kind: "config", before: { columnRules, relationshipRules }, after: { columnRules: nextColumnRules, relationshipRules } },
       ],
-      recipeStep: { type: "numericConversion", column: selectedColumn, targetType },
+      audit: { type: "numericConversion", column: selectedColumn, targetType },
     });
     setColumnRules(nextColumnRules);
     setValidationIssues(validateRows(nextVisibleRows, nextVisibleColumnRules));
@@ -2995,7 +3058,7 @@ export function App() {
         label: `Change ${selectedColumn} date format`,
         kind: "cells",
         changes: plan.changes,
-        recipeStep: {
+        audit: {
           type: "dateConversion",
           column: selectedColumn,
           sourcePresetId: dateConversionSourcePresetId,
@@ -3042,6 +3105,12 @@ export function App() {
     downloadCsv(csv, "cleansheet_validation_issues.csv");
   }
 
+  function exportDataBinCsv() {
+    if (!dataBin.length) return;
+    const csv = Papa.unparse(createDataBinExportRows(dataBin));
+    downloadCsv(csv, "cleansheet_data_bin.csv");
+  }
+
   function downloadCsv(csv, outputFileName) {
     downloadText(csv, outputFileName, "text/csv;charset=utf-8");
   }
@@ -3067,7 +3136,7 @@ export function App() {
               <p>{getCleaningTool(activeCleaningTool).description}</p>
             </div>
             <div className="cleaning-tools-heading-actions">
-              {activeCleaningTool !== "home" && <button type="button" className="dialog-close" onClick={() => { setActiveCleaningTool("home"); setRecipePreview(null); }}>All tools</button>}
+              {activeCleaningTool !== "home" && <button type="button" className="dialog-close" onClick={() => setActiveCleaningTool("home")}>All tools</button>}
               <button type="button" className="dialog-close" onClick={() => setIsCleaningToolsOpen(false)}>Close</button>
             </div>
           </div>
@@ -3102,6 +3171,8 @@ export function App() {
                   locked={locked}
                   badge={locked
                     ? "LOCKED"
+                    : tool.id === "dataBin"
+                      ? `${dataBin.length.toLocaleString()} ROWS`
                     : tool.id === "fillIssues"
                       ? hasUnscannedChanges
                         ? "SCAN AGAIN"
@@ -3243,12 +3314,12 @@ export function App() {
               <ToolCheck checked={duplicateDraft.trimValues} onChange={() => setDuplicateDraft((draft) => ({ ...draft, trimValues: !draft.trimValues }))} label="Ignore outer spaces" />
               <ToolCheck checked={duplicateDraft.ignoreCase} onChange={() => setDuplicateDraft((draft) => ({ ...draft, ignoreCase: !draft.ignoreCase }))} label="Ignore capitalization" />
             </div>
-            <label><span>When duplicates are found</span><select value={duplicateDraft.keep} onChange={(event) => setDuplicateDraft((draft) => ({ ...draft, keep: event.target.value }))}><option value="first">Keep the first row</option><option value="last">Keep the last row</option><option value="all">Delete every row in the duplicate group</option></select></label>
-            <ToolPreview valid={duplicatePreview.valid} error={duplicatePreview.error} summary={`${duplicatePreview.deleteCount.toLocaleString()} rows will be removed from ${duplicatePreview.groupCount.toLocaleString()} groups`}>
+            <label><span>When duplicates are found</span><select value={duplicateDraft.keep} onChange={(event) => setDuplicateDraft((draft) => ({ ...draft, keep: event.target.value }))}><option value="first">Keep the first row</option><option value="last">Keep the last row</option><option value="all">Move every copy to the Data Bin</option></select></label>
+            <ToolPreview valid={duplicatePreview.valid} error={duplicatePreview.error} summary={`${duplicatePreview.deleteCount.toLocaleString()} rows will move to the Data Bin from ${duplicatePreview.groupCount.toLocaleString()} groups`}>
               {duplicatePreview.examples.map((item, index) => <div key={index}><code>{item.values.join(" | ") || "(empty)"}</code> appears {item.count.toLocaleString()} times</div>)}
             </ToolPreview>
           </div>
-          <ToolActions onCancel={() => setActiveCleaningTool("home")} onApply={applyDuplicateRemoval} applyLabel="Remove duplicates" disabled={!duplicatePreview.valid || !duplicatePreview.deleteCount} danger />
+          <ToolActions onCancel={() => setActiveCleaningTool("home")} onApply={applyDuplicateRemoval} applyLabel="Move duplicates" disabled={!duplicatePreview.valid || !duplicatePreview.deleteCount} danger />
         </>
       );
     }
@@ -3273,7 +3344,7 @@ export function App() {
     }
 
     if (activeCleaningTool === "manageColumns") return renderManageColumnsTool();
-    if (activeCleaningTool === "recipes") return renderRecipesTool();
+    if (activeCleaningTool === "dataBin") return renderDataBinTool();
     return null;
   }
 
@@ -3367,6 +3438,7 @@ export function App() {
               <span>This keeps the column proportions, but the value assigned to each row is invented.</span>
             </div>
           )}
+          {estimatedFillWarning && <div className="fill-warning estimate-warning">{estimatedFillWarning}</div>}
           {customFillWarning && <div className="fill-warning">{customFillWarning}</div>}
 
           <div className="fill-preview">
@@ -3392,7 +3464,7 @@ export function App() {
 
         <ToolActions
           onCancel={() => setActiveCleaningTool("home")}
-          onApply={applyFillPlan}
+          onApply={() => applyFillPlan()}
           applyLabel="Apply fill"
           disabled={isFillPreviewPending || !fillPreview.valid || !fillPreview.changeCount}
         />
@@ -3473,7 +3545,7 @@ export function App() {
             >
               <div>{rows.length.toLocaleString()} rows will change</div>
               {deletedRelationships.length > 0 && (
-                <div>{deletedRelationships.length.toLocaleString()} connected formula rule{deletedRelationships.length === 1 ? "" : "s"} will also be removed</div>
+                <div>{deletedRelationships.length.toLocaleString()} connected relation{deletedRelationships.length === 1 ? "" : "s"} will also be removed</div>
               )}
             </ToolPreview>
             <ToolActions onCancel={() => setActiveCleaningTool("home")} onApply={applyDeleteColumns} applyLabel="Delete columns" disabled={!deleteValidation.valid} danger />
@@ -3526,45 +3598,35 @@ export function App() {
     );
   }
 
-  function renderRecipesTool() {
+  function renderDataBinTool() {
     return (
-      <div className="recipe-workspace">
-        <section className="recipe-capture-card">
-          <div><span className="field-label">Current session</span><strong>{capturedRecipeSteps.length.toLocaleString()} repeatable step{capturedRecipeSteps.length === 1 ? "" : "s"} captured</strong><p>Manual cell edits are never included</p></div>
-          {capturedRecipeSteps.length > 0 && (
-            <div className="recipe-step-list">
-              {capturedRecipeSteps.map((step, index) => (
-                <div className="recipe-step" key={step.captureId}>
-                  <span><strong>{index + 1}. {getRecipeStepLabel(step)}</strong><small>{describeRecipeStep(step)}</small></span>
-                  <div><button type="button" className="secondary-button" disabled={index === 0} onClick={() => reorderCapturedRecipeStep(index, -1)}>Up</button><button type="button" className="secondary-button" disabled={index === capturedRecipeSteps.length - 1} onClick={() => reorderCapturedRecipeStep(index, 1)}>Down</button><button type="button" className="secondary-button" onClick={() => removeCapturedRecipeStep(step.captureId)}>Remove</button></div>
-                </div>
-              ))}
-            </div>
-          )}
-          <div className="recipe-save-row"><input value={recipeName} onChange={(event) => setRecipeName(event.target.value)} placeholder="Recipe name" /><button type="button" onClick={saveCurrentRecipe} disabled={!columns.length}>Save recipe</button></div>
-        </section>
-
-        <div className="recipe-library-heading">
-          <div><span className="field-label">Saved recipes</span><strong>{savedRecipes.length.toLocaleString()} saved in this browser</strong></div>
-          <label className="file-picker recipe-import">Import JSON<input type="file" accept="application/json,.json" onChange={importRecipe} /></label>
-        </div>
-        {recipeMessage && <div className="tool-message">{recipeMessage}</div>}
-        {savedRecipes.length === 0 ? <div className="tool-empty">No recipes saved yet</div> : (
-          <div className="recipe-library">
-            {savedRecipes.map((recipe) => (
-              <article className="recipe-card" key={recipe.id}>
-                <div>{renamingRecipeId === recipe.id ? <div className="recipe-rename"><input value={renamingRecipeName} onChange={(event) => setRenamingRecipeName(event.target.value)} /><button type="button" onClick={() => saveRecipeName(recipe.id)}>Save</button></div> : <><strong>{recipe.name}</strong><p>{recipe.steps.length.toLocaleString()} steps · {recipe.requiredColumns.length.toLocaleString()} required columns</p></>}</div>
-                <div className="recipe-card-actions"><button type="button" onClick={() => previewRecipe(recipe)} disabled={!rows.length}>Preview & Run</button><button type="button" className="secondary-button" onClick={() => beginRenameRecipe(recipe)}>Rename</button><button type="button" className="secondary-button" onClick={() => duplicateRecipe(recipe)}>Duplicate</button><button type="button" className="secondary-button" onClick={() => exportRecipe(recipe)}>Export</button><button type="button" className="secondary-button" onClick={() => deleteRecipe(recipe)}>Delete</button></div>
-              </article>
-            ))}
+      <div className="data-bin-workspace">
+        <div className="data-bin-summary">
+          <div>
+            <span className="field-label">Recoverable rows</span>
+            <strong>{dataBin.length.toLocaleString()} row{dataBin.length === 1 ? "" : "s"} in the Bin</strong>
+            <p>These rows are outside scans and normal exports until you restore them</p>
           </div>
-        )}
-        {recipePreview && (
-          <section className={`recipe-preview-card ${recipePreview.valid ? "" : "invalid"}`}>
-            <div><span className="field-label">Recipe preview</span><strong>{recipePreview.recipe.name}</strong></div>
-            {recipePreview.valid ? <><div className="recipe-summary-list">{recipePreview.summary.map((item, index) => <div key={`${item.label}-${index}`}><span>{item.label}</span><strong>{item.count.toLocaleString()} {item.unit}</strong></div>)}</div><button type="button" onClick={applyPreviewedRecipe}>Apply recipe</button></> : <strong className="error-text">{recipePreview.error}</strong>}
-          </section>
-        )}
+          <div className="data-bin-actions">
+            <button type="button" onClick={() => restoreDataBinEntries(selectedBinEntryIds)} disabled={!selectedBinEntryIds.length}>Restore selected ({selectedBinEntryIds.length.toLocaleString()})</button>
+            <button type="button" className="secondary-button" onClick={() => restoreDataBinEntries(dataBin.map((entry) => entry.id))} disabled={!dataBin.length}>Restore all</button>
+            <button type="button" className="secondary-button" onClick={exportDataBinCsv} disabled={!dataBin.length}>Export Bin CSV</button>
+          </div>
+        </div>
+        {dataBin.length ? (
+          <div className="ag-theme-quartz data-bin-grid">
+            <AgGridReact
+              rowData={dataBin}
+              columnDefs={dataBinGridColumns}
+              defaultColDef={{ filter: true, sortable: true, resizable: true, editable: false }}
+              getRowId={(params) => params.data.id}
+              pagination
+              paginationPageSize={100}
+              rowSelection={GRID_ROW_SELECTION}
+              onSelectionChanged={(event) => setSelectedBinEntryIds(event.api.getSelectedRows().map((entry) => entry.id))}
+            />
+          </div>
+        ) : <div className="tool-empty">Nothing is in the Data Bin</div>}
       </div>
     );
   }
@@ -3582,6 +3644,7 @@ export function App() {
           onPackChange={setCampaignPack}
           onHellTransition={handleHellTransition}
           containmentSignal={hellContainmentSignal}
+          initialChallengeId={activeChallengeId}
           onContainmentComplete={() => setHellContainmentSignal(0)}
           reducedEffects={isEffectsReduced}
           onPowerSequenceComplete={() => setCampaignPowerSequenceSignal(0)}
@@ -3763,14 +3826,16 @@ export function App() {
             </div>
           </div>
 
-          <DataHealthMap
-            rowCount={rows.length}
-            columns={visibleColumns}
-            issues={validationIssues}
-            current={Boolean(lastScannedAt) && !hasUnscannedChanges}
-            unidentifiedColumns={unidentifiedVisibleColumns}
-            onIssueSelect={focusHealthIssue}
-          />
+          {!activeChallenge?.tutorial && (
+            <DataHealthMap
+              rowCount={rows.length}
+              columns={visibleColumns}
+              issues={validationIssues}
+              current={Boolean(lastScannedAt) && !hasUnscannedChanges}
+              unidentifiedColumns={unidentifiedVisibleColumns}
+              onIssueSelect={focusHealthIssue}
+            />
+          )}
 
           {activeChallenge && (
             <section
@@ -3795,7 +3860,7 @@ export function App() {
               )}
               <div className="challenge-objectives-heading">
                 <button type="button" className="challenge-objectives-toggle" onClick={() => setIsObjectivesOpen((open) => !open)}>
-                  <span className="challenge-number">Challenge {activeChallenge.number}</span>
+                  <span className="challenge-number">{activeChallenge.tutorial ? `Boot 0.${activeChallenge.tutorialStage}C` : `Challenge ${activeChallenge.number}`}</span>
                   <span>
                     <strong>{activeChallenge.title}</strong>
                     <small>{challengeEvaluation ? `${challengeEvaluation.completedCount}/${challengeEvaluation.totalCount} objectives` : "Scan to check your work"}</small>
@@ -3932,7 +3997,7 @@ export function App() {
                 className="information-toggle"
                 onClick={() => setIsInformationOpen(!isInformationOpen)}
               >
-                <span>{activeChallenge?.tutorial ? "Boot Sequence Walkthrough" : "Sample Dataset Walkthrough"}</span>
+                <span>{activeChallenge?.tutorial ? `Boot 0.${activeChallenge.tutorialStage}C Walkthrough` : "Sample Dataset Walkthrough"}</span>
                 <span>{isInformationOpen ? "Hide walkthrough" : "Open walkthrough"}</span>
               </button>
               {!isInformationPortable && (
@@ -3951,9 +4016,20 @@ export function App() {
             {isInformationOpen && (
               <div className="information-content">
                 <div className="information-intro">
-                  <strong>{activeChallenge?.tutorial ? "Challenge 0 training file" : "Try it with the sample dataset"}</strong>
-                  <p>{activeChallenge?.tutorial ? "The training file is already loaded, follow the steps below to complete Boot Sequence" : "Load the sample, then follow the steps below to get familiar with the project"}</p>
+                  <strong>{activeChallenge?.tutorial ? `Boot 0.${activeChallenge.tutorialStage}C training file` : "Try it with the sample dataset"}</strong>
+                  <p>{activeChallenge?.tutorial ? `This stage has ${activeChallenge.objectives.length} objective${activeChallenge.objectives.length === 1 ? "" : "s"}, follow the steps below and scan when you are done` : "Load the sample, then follow the steps below to get familiar with the project"}</p>
                 </div>
+                {activeChallenge?.tutorialStage === 1 ? (
+                  <BootScanWalkthrough />
+                ) : activeChallenge?.tutorialStage === 2 ? (
+                  <BootCategoryWalkthrough />
+                ) : activeChallenge?.tutorialStage === 3 ? (
+                  <BootIssueWalkthrough />
+                ) : activeChallenge?.tutorialStage === 4 ? (
+                  <BootRecoveryWalkthrough />
+                ) : activeChallenge?.tutorialStage === 5 ? (
+                  <BootRelationshipWalkthrough />
+                ) : (
                 <ol className="walkthrough-list">
                   <li>
                     <span>1</span>
@@ -3963,49 +4039,60 @@ export function App() {
                   </li>
                   <li>
                     <span>2</span>
-                    <div><strong>Choose what to scan</strong><p>Only visible columns are included when you <HintCode hint="Checks every visible cell against the type and format selected for its column. Changing a column type changes what the next scan considers valid.">Scan</HintCode>. For now, <HintCode hint="Removes a column from the table and excludes it from scanning.">Hide</HintCode> everything except <span className="column-reference">Quantity</span>, <span className="column-reference">Price Per Unit</span>, and <span className="column-reference">Total Spent</span></p></div>
+                    <div><strong>Choose what to scan</strong><p>Only visible columns are included when you <HintCode hint="Checks every visible cell against the type and format selected for its column. Changing a column type changes what the next scan considers valid.">Scan</HintCode>. For now, <HintCode hint="Removes a column from the table and excludes it from scanning.">Hide</HintCode> everything except <span className="column-reference">Item</span>, <span className="column-reference">Quantity</span>, <span className="column-reference">Price Per Unit</span>, and <span className="column-reference">Total Spent</span></p></div>
                   </li>
                   <li>
                     <span>3</span>
-                    <div><strong>Set column types</strong><p>Choose <code>Number</code> for <span className="column-reference">Quantity</span>, <span className="column-reference">Price Per Unit</span>, and <span className="column-reference">Total Spent</span> by clicking each column name in the table below and using the column bar above the table, then click <HintCode hint="Checks every visible cell against the type and format selected for its column">Scan Again</HintCode>. Column types do not change your data; they tell the scanner what each cell should look like, and every visible cell is checked against its column's selected type during a scan</p></div>
+                    <div><strong>Set the column types</strong><p>Choose <code>Number</code> for <span className="column-reference">Quantity</span>, <span className="column-reference">Price Per Unit</span>, and <span className="column-reference">Total Spent</span>, then set <span className="column-reference">Item</span> to <code>Category</code> and allow only Cake, Coffee, Cookie, Juice, Salad, Sandwich, Smoothie, and Tea</p></div>
                   </li>
                   <li>
                     <span>4</span>
                     <div>
+                      <strong>Let Item and price identify each other</strong>
+                      <p>Every Item has its own price, so open <HintCode hint="Learns trusted matches from rows where both columns are already valid">Column Relationships</HintCode>, choose <code>Logical relation</code>, use Item as the anchor, then click <code>Find relations</code></p>
+                      <div className="formula-reference-list">
+                        <span className="formula-reference">Item ↔ Price Per Unit</span>
+                      </div>
+                      <p>Price Per Unit should rise to the top, verify it on the full file and add the recommended relation, then apply every fixable match</p>
+                    </div>
+                  </li>
+                  <li>
+                    <span>5</span>
+                    <div>
                       <strong>Link the three number columns</strong>
-                      <p>In <HintCode hint="Creates formulas between columns to find and fill missing calculated values.">Column Relationships</HintCode>, add these three rules:</p>
+                      <p>In <HintCode hint="Creates calculations between columns to find and fill missing values">Column Relationships</HintCode>, switch to <code>Mathematical relation</code> and add these three rules:</p>
                       <div className="formula-reference-list">
                         <span className="formula-reference">Total Spent = [Quantity] * [Price Per Unit]</span>
                         <span className="formula-reference">Quantity = [Total Spent] / [Price Per Unit]</span>
                         <span className="formula-reference">Price Per Unit = [Total Spent] / [Quantity]</span>
                       </div>
-                      <p>Click <HintCode hint="Runs every enabled relationship formula against the dataset.">Check all relationships</HintCode>, select the fixable rows, then apply the selected fixes to fill missing values</p>
                     </div>
                   </li>
                   <li>
-                    <span>5</span>
-                    <div><strong>Remove rows the formulas cannot fix</strong><p>Some rows are missing values in two or more related columns, so the formulas do not have enough information to calculate them. After fixing the other problems and scanning again, open <HintCode hint="Shows every empty or invalid cell found during the latest scan">Validation Issues</HintCode> and choose <HintCode hint="Removes every row containing at least one issue from the latest scan">Delete rows with issues</HintCode> to remove the remaining incomplete rows (use this option only when no valid fix can be applied)</p></div>
-                  </li>
-                  <li>
                     <span>6</span>
-                    <div><strong>Manual fix</strong><p>If automatic filling cannot handle an issue, use <HintCode hint="Temporarily shows only rows containing detected problems.">Display invalid rows</HintCode> to find it, then click the cell and edit it. Category cells offer existing values as choices</p></div>
+                    <div><strong>Run the relationships in passes</strong><p>Click <HintCode hint="Runs every enabled Logical and Mathematical relation against the current data">Check all relationships</HintCode>, select every fixable row, and apply the fixes, then check again because a recovered price may reveal an Item and a recovered Item may reveal another price</p></div>
                   </li>
                   <li>
                     <span>7</span>
-                    <div><strong>Fill invalid Location values</strong><p>Show <span className="column-reference">Location</span>, click its column name and set <code>Column Type</code> to <code>Category</code>. Open <code>Configure</code>, choose <code>Allowed Values</code>, then select <span className="column-reference">In-store</span> and <span className="column-reference">Takeaway</span> as the correct choices and save the rule. Click <HintCode hint="Checks every visible cell against its column type again after your edits.">Scan Again</HintCode>, open <HintCode hint="Contains batch tools for cleaning the loaded data">Cleaning Tools</HintCode> and choose <code>Fill Issues</code>, then use <code>Most common value</code> or enter one of the allowed values to replace the Location problems</p></div>
+                    <div><strong>Handle the dates without guessing</strong><p>Show <span className="column-reference">Transaction Date</span>, set it to <code>Date</code> with <code>YYYY-MM-DD</code>, then use <code>Missing Rules</code> to allow genuinely empty dates. Change known date formats or edit a date only when the correct value is clear</p></div>
                   </li>
                   <li>
                     <span>8</span>
-                    <div><strong>Try the rest of the table</strong><p>Now show the remaining columns and try cleaning the rest on your own. There are category and date issues, set their types and formats, scan again, and fix what you find</p></div>
+                    <div><strong>Move only the hopeless rows</strong><p>After the relationships stop finding fixes, scan again and open <HintCode hint="Shows every empty or invalid cell found during the latest scan">Validation Issues</HintCode>. Use <HintCode hint="Moves affected rows out of the active table while keeping them recoverable">Move rows to Data Bin</HintCode> only when Item, price, quantity, and total leave no trustworthy way to recover the row, then open <code>Data Bin</code> if you want to review or restore anything</p></div>
                   </li>
                   <li>
                     <span>9</span>
+                    <div><strong>Check only what the job needs</strong><p>Keep <span className="column-reference">Item</span>, the three number columns, and <span className="column-reference">Transaction Date</span> visible, then scan again. Payment Method and Location are still unknown here so the tutorial will not ask you to invent them</p></div>
+                  </li>
+                  <li>
+                    <span>10</span>
                     {activeChallenge?.tutorial
                       ? <div><strong>Finish Boot Sequence</strong><p>Scan one last time after fixing the remaining columns and Boot Sequence will complete when every objective is clean</p></div>
                       : <div><strong>Export when finished</strong><p><HintCode hint="Downloads the currently visible columns as a new CSV file.">Export CSV</HintCode> When you are done, all changes will be applied</p></div>}
                   </li>
                 </ol>
-                <section className="tutorial-tricks">
+                )}
+                {(!activeChallenge?.tutorial || activeChallenge.tutorialStage === 5) && <section className="tutorial-tricks">
                   <div>
                     <span className="section-label">Useful tricks</span>
                     <strong>Easy to miss and very useful</strong>
@@ -4024,12 +4111,12 @@ export function App() {
                       <p>Open <HintCode hint="Contains batch tools for cleaning the loaded data">Cleaning Tools</HintCode> then choose <code>Manage Columns</code> to create, delete, split, or combine columns and drag any table header when you want to move it. Undo can bring deleted columns back</p>
                     </article>
                   </div>
-                </section>
+                </section>}
               </div>
             )}
           </section>
 
-          <section className="relationship-panel">
+          {(!activeChallenge?.tutorial || activeChallenge.tutorialStage >= 4) && <section className="relationship-panel">
             <button
               type="button"
               className="relationship-toggle"
@@ -4043,16 +4130,34 @@ export function App() {
                 <div className="relationship-editor">
                   <div>
                     <span className="field-label">{relationshipDraft.id ? "Edit relationship" : "New relationship"}</span>
-                    <p>Build a formula using your columns Example: [Target Column] = [Unit amount] * [Unit price]<br />
-                      You don't have to add equal sign '=' the assigned [Target Column] is what's on the left side of the equation</p>
+                    <p>{relationshipDraft.kind === "lookup"
+                      ? "A Logical relation learns matching pairs from rows where both cells already pass their column rules"
+                      : <>Build a Mathematical relation using your columns Example: [Target Column] = [Unit amount] * [Unit price]<br />You don't have to add equal sign '=' the assigned [Target Column] is what's on the left side of the equation</>}</p>
                   </div>
                   <label>
+                    <span>Relationship type</span>
+                    <select value={relationshipDraft.kind} onChange={(event) => updateRelationshipDraft("kind", event.target.value)}>
+                      <option value="formula">Mathematical relation</option>
+                      <option value="lookup">Logical relation</option>
+                    </select>
+                  </label>
+                  {relationshipDraft.kind === "lookup" && (
+                    <label>
+                      <span>Anchor column</span>
+                      <select value={relationshipDraft.sourceColumn} onChange={(event) => updateRelationshipDraft("sourceColumn", event.target.value)}>
+                        <option value="">Choose an anchor column</option>
+                        {visibleColumns.map((column) => <option key={column} value={column}>{column}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  {relationshipDraft.kind === "formula" && <label>
                     <span>Target column</span>
                     <select value={relationshipDraft.targetColumn} onChange={(event) => updateRelationshipDraft("targetColumn", event.target.value)}>
                       <option value="">Choose target column</option>
-                      {columns.map((column) => <option key={column} value={column}>{column}</option>)}
+                      {columns.filter((column) => column !== relationshipDraft.sourceColumn).map((column) => <option key={column} value={column}>{column}</option>)}
                     </select>
-                  </label>
+                  </label>}
+                  {relationshipDraft.kind === "formula" ? <>
                   <div className="relationship-formula-field">
                     <span>Formula</span>
                     <input
@@ -4097,15 +4202,147 @@ export function App() {
                       ))}
                     </div>
                   </div>
-                  {!relationshipDraftValidation.valid && relationshipDraft.formula && (
+                  </> : (
+                    <div className="lookup-explainer">
+                      <strong>Find what connects to the anchor</strong>
+                      <p>Every visible column is compared with the anchor in both directions using up to 50,000 rows</p>
+                      <p>Strong and useful matches rise to the top, then you can verify one against the full file</p>
+                      <button
+                        type="button"
+                        className="lookup-preview-button"
+                        onClick={findLogicalRelations}
+                        disabled={!relationshipDraft.sourceColumn || visibleColumns.length < 2 || lookupAnalysisProgress?.mode === "finding"}
+                      >
+                        {lookupAnalysisProgress?.mode === "finding" ? "Finding relations..." : "Find relations"}
+                      </button>
+                      {lookupAnalysisProgress && (
+                        <div className="lookup-analysis-progress" aria-live="polite">
+                          <div><span style={{ width: `${Math.round(lookupAnalysisProgress.progress * 100)}%` }} /></div>
+                          <p>{lookupAnalysisProgress.label} {Math.round(lookupAnalysisProgress.progress * 100)}%</p>
+                        </div>
+                      )}
+                      {activeLookupFinder && activeLookupFinder.results.length > 0 && (
+                        <div className="lookup-finder-results">
+                          <div className="lookup-finder-heading">
+                            <strong>{activeLookupFinder.results.length} column{activeLookupFinder.results.length === 1 ? "" : "s"} compared</strong>
+                            <span>{activeLookupFinder.sampleSize.toLocaleString()} of {activeLookupFinder.totalRows.toLocaleString()} rows sampled</span>
+                          </div>
+                          <div className="lookup-candidate-list">
+                            {activeLookupFinder.results.map((candidate) => {
+                              const recommendedResult = candidate.recommendation === "reverse"
+                                ? candidate.reverse
+                                : candidate.forward;
+                              const bestResult = candidate.forward.dependencyStrength >= candidate.reverse.dependencyStrength
+                                ? candidate.forward
+                                : candidate.reverse;
+                              const displayedResult = candidate.recommendation === "none" ? bestResult : recommendedResult;
+                              const repairs = candidate.recommendation === "both"
+                                ? candidate.forward.counts.safe + candidate.reverse.counts.safe
+                                : candidate.recommendation === "reverse"
+                                  ? candidate.reverse.counts.safe
+                                  : candidate.recommendation === "forward"
+                                    ? candidate.forward.counts.safe
+                                    : Math.max(candidate.forward.counts.safe, candidate.reverse.counts.safe);
+                              const direction = candidate.recommendation === "both"
+                                ? `${relationshipDraft.sourceColumn} ↔ ${candidate.column}`
+                                : candidate.recommendation === "reverse"
+                                  ? `${candidate.column} → ${relationshipDraft.sourceColumn}`
+                                  : candidate.recommendation === "forward"
+                                    ? `${relationshipDraft.sourceColumn} → ${candidate.column}`
+                                    : "No clear direction";
+                              return (
+                                <article
+                                  className={getLookupStrengthLevel(displayedResult)}
+                                  key={candidate.column}
+                                  data-lookup-candidate={candidate.column}
+                                >
+                                  <div>
+                                    <strong>{candidate.column}</strong>
+                                    <code>{direction}</code>
+                                  </div>
+                                  <span>{displayedResult.dependencyStrength.toLocaleString()}% best dependency</span>
+                                  <span>{repairs.toLocaleString()} possible repair{repairs === 1 ? "" : "s"} in the sample</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => verifyLogicalRelation(candidate.column)}
+                                    disabled={lookupAnalysisProgress !== null}
+                                  >
+                                    Verify {candidate.column} relation
+                                  </button>
+                                </article>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                      {activeLookupFinder?.status === "ready" && activeLookupFinder.results.length === 0 && (
+                        <p className="relationship-preview-needed">No other visible columns are available to compare</p>
+                      )}
+                      {activeLookupFinder?.status === "error" && (
+                        <div className="relationship-error">{activeLookupFinder.error}</div>
+                      )}
+                      {activeLookupPreview && (
+                        <div className="lookup-draft-preview">
+                          <strong>Full file verification</strong>
+                          <div className="lookup-direction-grid">
+                            <article className={getLookupStrengthLevel(activeLookupPreview.forward)}>
+                              <code>{relationshipDraft.sourceColumn} → {relationshipDraft.targetColumn}</code>
+                              <strong>{activeLookupPreview.forward.dependencyStrength.toLocaleString()}% dependency strength</strong>
+                              <span>{activeLookupPreview.forward.evidenceRowCount.toLocaleString()} valid pairs checked</span>
+                              <span>{activeLookupPreview.forward.mappingCount.toLocaleString()} usable matches and {activeLookupPreview.forward.ambiguousMappingCount.toLocaleString()} conflicts</span>
+                              <span>{activeLookupPreview.forward.counts.safe.toLocaleString()} repairs available now</span>
+                            </article>
+                            <article className={getLookupStrengthLevel(activeLookupPreview.reverse)}>
+                              <code>{relationshipDraft.targetColumn} → {relationshipDraft.sourceColumn}</code>
+                              <strong>{activeLookupPreview.reverse.dependencyStrength.toLocaleString()}% dependency strength</strong>
+                              <span>{activeLookupPreview.reverse.evidenceRowCount.toLocaleString()} valid pairs checked</span>
+                              <span>{activeLookupPreview.reverse.mappingCount.toLocaleString()} usable matches and {activeLookupPreview.reverse.ambiguousMappingCount.toLocaleString()} conflicts</span>
+                              <span>{activeLookupPreview.reverse.counts.safe.toLocaleString()} repairs available now</span>
+                            </article>
+                          </div>
+                          {activeLookupPreview.recommendation === "none" ? (
+                            <p className="lookup-recommendation no-recommendation">No recommendation, neither direction has enough consistent evidence</p>
+                          ) : (
+                            <p className="lookup-recommendation">
+                              Recommended: <code>{activeLookupPreview.recommendation === "both"
+                                ? `${relationshipDraft.sourceColumn} ↔ ${relationshipDraft.targetColumn}`
+                                : activeLookupPreview.recommendation === "reverse"
+                                  ? `${relationshipDraft.targetColumn} → ${relationshipDraft.sourceColumn}`
+                                  : `${relationshipDraft.sourceColumn} → ${relationshipDraft.targetColumn}`}</code>
+                            </p>
+                          )}
+                          <div className="lookup-direction-options" aria-label="Logical relation direction">
+                            <button type="button" disabled={!activeLookupPreview.forward.mappingCount} className={relationshipDraft.lookupDirection === "forward" ? "selected" : ""} onClick={() => updateRelationshipDraft("lookupDirection", "forward")}>{relationshipDraft.sourceColumn} → {relationshipDraft.targetColumn}</button>
+                            <button type="button" disabled={!activeLookupPreview.reverse.mappingCount} className={relationshipDraft.lookupDirection === "reverse" ? "selected" : ""} onClick={() => updateRelationshipDraft("lookupDirection", "reverse")}>{relationshipDraft.targetColumn} → {relationshipDraft.sourceColumn}</button>
+                            <button type="button" disabled={!activeLookupPreview.forward.mappingCount || !activeLookupPreview.reverse.mappingCount} className={relationshipDraft.lookupDirection === "both" ? "selected" : ""} onClick={() => updateRelationshipDraft("lookupDirection", "both")}>{relationshipDraft.sourceColumn} ↔ {relationshipDraft.targetColumn}</button>
+                          </div>
+                          <LookupValuePreview
+                            anchorColumn={relationshipDraft.sourceColumn}
+                            targetColumn={relationshipDraft.targetColumn}
+                            preview={activeLookupPreview}
+                            direction={relationshipDraft.lookupDirection}
+                          />
+                          {activeLookupPreview.recommendation === "none" && <p>You can still choose a weak direction if the relationship makes sense outside this table</p>}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {!relationshipDraftValidation.valid && (
+                    relationshipDraft.kind === "formula"
+                      ? Boolean(relationshipDraft.formula || relationshipDraft.targetColumn)
+                      : Boolean(relationshipDraft.targetColumn)
+                  ) && (
                     <div className="relationship-error">{relationshipDraftValidation.error}</div>
                   )}
+                  {relationshipDraft.kind === "lookup" && relationshipDraft.sourceColumn && !activeLookupFinder && !activeLookupPreview && (
+                    <p className="relationship-preview-needed">Find a relation before adding it</p>
+                  )}
                   <div className="relationship-editor-actions">
-                    <button type="button" onClick={saveRelationshipRule} disabled={!relationshipDraftValidation.valid}>
+                    <button type="button" onClick={saveRelationshipRule} disabled={!canSaveRelationship}>
                       {relationshipDraft.id ? "Save relationship" : "Add relationship"}
                     </button>
                     {relationshipDraft.id && (
-                      <button type="button" className="secondary-button" onClick={() => setRelationshipDraft(EMPTY_RELATIONSHIP_DRAFT)}>Cancel edit</button>
+                      <button type="button" className="secondary-button" onClick={() => { setRelationshipDraft(EMPTY_RELATIONSHIP_DRAFT); setLookupPreview(null); setLookupFinder(null); }}>Cancel edit</button>
                     )}
                   </div>
                 </div>
@@ -4115,12 +4352,15 @@ export function App() {
                     <span className="field-label">Saved rules</span>
                   </div>
                   {relationshipRuleStates.length === 0 ? (
-                    <p className="relationship-empty">No relationships yet. Add a formula to calculate a target column from other columns.</p>
+                    <p className="relationship-empty">No relationships yet. Add a Mathematical or Logical relation</p>
                   ) : relationshipRuleStates.map((rule) => (
                     <article className="relationship-rule" key={rule.id}>
                       <div>
                         <strong>{rule.name}</strong>
-                        <code>{rule.targetColumn} = {rule.formula}</code>
+                        <span className={`relationship-kind ${rule.kind === "lookup" ? "lookup" : "formula"}`}>{rule.kind === "lookup" ? "LOGICAL" : "MATHEMATICAL"}</span>
+                        <code>{rule.kind === "lookup"
+                          ? `${rule.sourceColumn} ${rule.bidirectional ? "\u2194" : "\u2192"} ${rule.targetColumn}`
+                          : `${rule.targetColumn} = ${rule.formula}`}</code>
                         {!rule.validation.valid && <span className="relationship-unbound">Unavailable: {rule.validation.error}</span>}
                       </div>
                       <div className="relationship-rule-actions">
@@ -4142,6 +4382,14 @@ export function App() {
                         <p>{relationshipIssues.length
                           ? `${relationshipIssues.length.toLocaleString()} relationship issue${relationshipIssues.length === 1 ? "" : "s"} found.`
                           : "Check your saved rules to find fixable values."}</p>
+                        {Object.keys(lookupIssueCounts).length > 0 && (
+                          <div className="lookup-preview-counts">
+                            <span className="safe">{(lookupIssueCounts.safe ?? 0).toLocaleString()} safe</span>
+                            <span>{(lookupIssueCounts.ambiguous ?? 0).toLocaleString()} ambiguous</span>
+                            <span>{(lookupIssueCounts.noEvidence ?? 0).toLocaleString()} no evidence</span>
+                            <span>{(lookupIssueCounts.invalidSource ?? 0).toLocaleString()} invalid source</span>
+                          </div>
+                        )}
                       </div>
                       <div className="relationship-result-actions">
                         <label className="select-all-fixes">
@@ -4175,7 +4423,7 @@ export function App() {
                 )}
               </div>
             )}
-          </section>
+          </section>}
 
           <div className="validation-panel">
             <button
@@ -4202,7 +4450,7 @@ export function App() {
                         Export Issues CSV
                       </button>
                       <button type="button" className="delete-issue-rows-button" onClick={deleteRowsWithValidationIssues}>
-                        Delete rows with issues ({validationIssueRowCount.toLocaleString()})
+                        Move rows to Data Bin ({validationIssueRowCount.toLocaleString()})
                       </button>
                     </div>
                   </div>
@@ -4350,7 +4598,17 @@ export function App() {
               </div>
               <div className="issue-jump-actions">
                 <div className="issue-jump-action-row issue-jump-history-actions">
-                  <button type="button" className="secondary-button" onClick={() => openCleaningTools("home")}>Cleaning Tools{capturedRecipeSteps.length ? ` (${capturedRecipeSteps.length})` : ""}</button>
+                  {selectedGridRowIds.length > 0 && (
+                    <button
+                      type="button"
+                      className="move-selected-rows-button"
+                      onClick={moveSelectedRowsToDataBin}
+                      title="Move selected rows out of the table without losing them"
+                    >
+                      Move {selectedGridRowIds.length.toLocaleString()} to Bin
+                    </button>
+                  )}
+                  <button type="button" className="secondary-button" onClick={() => openCleaningTools("home")}>Cleaning Tools</button>
                   <button type="button" className="secondary-button" onClick={undo} disabled={!history.past.length}>Undo</button>
                   <button type="button" className="secondary-button" onClick={redo} disabled={!history.future.length}>Redo</button>
                 </div>
@@ -4384,6 +4642,7 @@ export function App() {
               pagination
               paginationPageSize={100}
               rowSelection={GRID_ROW_SELECTION}
+              onSelectionChanged={(event) => setSelectedGridRowIds(event.api.getSelectedRows().map((row) => row.__rowId))}
               onCellValueChanged={handleCellValueChanged}
               onColumnMoved={handleColumnMoved}
               onColumnHeaderClicked={(event) => {
@@ -4403,6 +4662,7 @@ export function App() {
         </section>
       </section>
 
+      {isRowWipeoutSceneOpen && <div className="row-wipeout-backdrop" aria-hidden="true" />}
       {(viewMode === "campaign" || activeChallenge) && (
         <Clipbit
           message={clipbitReaction.message}
@@ -4411,6 +4671,9 @@ export function App() {
           campaign={viewMode === "campaign"}
           hell={isHellContext}
           reducedEffects={isEffectsReduced}
+          spotlight={isRowWipeoutSceneOpen}
+          spotlightActionLabel="Restart level"
+          onSpotlightAction={restartAfterRowWipeout}
           onToggle={() => setIsClipbitMinimized((current) => !current)}
           onMinimize={() => setIsClipbitMinimized(true)}
           breakSignal={clipbitBreakSignal}
@@ -4460,7 +4723,7 @@ export function App() {
           <section className={`challenge-story-dialog ${storyChallenge.accent} ${storyChallenge.pack === "hell" ? "hell-story-dialog" : ""}`} role="dialog" aria-modal="true" aria-labelledby="challenge-story-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="challenge-story-heading">
               <div>
-                <span className="section-label">{storyChallenge.pack === "hell" ? `H${storyChallenge.number} // SIGNAL CORRUPTED` : `Challenge ${storyChallenge.number} briefing`}</span>
+                <span className="section-label">{storyChallenge.pack === "hell" ? `H${storyChallenge.number} // SIGNAL CORRUPTED` : storyChallenge.tutorial ? `Boot 0.${storyChallenge.tutorialStage}C briefing` : `Challenge ${storyChallenge.number} briefing`}</span>
                 <CorruptedText
                   as="h2"
                   id="challenge-story-title"
@@ -4545,12 +4808,21 @@ export function App() {
                 <span key={label}><small>{label}</small><strong>{value}</strong></span>
               ))}
             </div>
+            <Clipbit
+              message={`You did it human and I am genuinely impressed, please do not make this weird\n${activeChallenge.assistant?.win ?? "The file is clean and even I ran out of complaints"}`}
+              mood="happy"
+              hell={isHellContext}
+              reducedEffects={isEffectsReduced}
+              embedded
+            />
             <div className="challenge-result-actions">
               <button type="button" className="secondary-button" onClick={() => setIsChallengeResultOpen(false)}>Keep cleaning</button>
               <button type="button" onClick={() => {
                 setIsChallengeResultOpen(false);
                 showCampaign();
-              }}>Choose another mess</button>
+              }}>{activeChallenge.tutorial
+                ? activeChallenge.tutorialStage < 5 ? "Back to boot menu" : "Power the challenge rack"
+                : "Choose another mess"}</button>
             </div>
           </section>
         </div>
@@ -4827,6 +5099,148 @@ export function App() {
   );
 }
 
+function BootScanWalkthrough() {
+  return (
+    <ol className="walkthrough-list compact-walkthrough">
+      <li>
+        <span>1</span>
+        <div><strong>Pick the column</strong><p>Click <span className="column-reference">Tickets Closed</span> in the table header and its controls will appear above the table</p></div>
+      </li>
+      <li>
+        <span>2</span>
+        <div><strong>Tell the scanner what belongs</strong><p>Choose <code>Integer</code> under <code>Column Type</code> because ticket counts should be whole numbers</p></div>
+      </li>
+      <li>
+        <span>3</span>
+        <div><strong>Run your first scan</strong><p>Click <HintCode hint="Checks every visible cell against the type selected for its column">Scan</HintCode> and Stage 1 will finish when the scanner confirms every ticket count is an integer</p></div>
+      </li>
+    </ol>
+  );
+}
+
+function BootCategoryWalkthrough() {
+  return (
+    <ol className="walkthrough-list compact-walkthrough">
+      <li>
+        <span>1</span>
+        <div><strong>Normalize the writing</strong><p>Open <code>Cleaning Tools</code> then <code>Text Cleanup</code>, choose <span className="column-reference">Status</span>, trim spaces and use <code>Title Case</code></p></div>
+      </li>
+      <li>
+        <span>2</span>
+        <div><strong>Turn Status into a Category</strong><p>Click the <span className="column-reference">Status</span> header then choose <code>Category</code> under <code>Column Type</code></p></div>
+      </li>
+      <li>
+        <span>3</span>
+        <div><strong>Finish the stage</strong><p>Click <HintCode hint="Checks the cleaned Status values against the Category type">Scan</HintCode> and 0.3C will unlock</p></div>
+      </li>
+    </ol>
+  );
+}
+
+function BootIssueWalkthrough() {
+  return (
+    <ol className="walkthrough-list compact-walkthrough">
+      <li>
+        <span>1</span>
+        <div><strong>Set the target type</strong><p>Click <span className="column-reference">Daily Target</span> and choose <code>Integer</code> because every agent should have the whole number 8</p></div>
+      </li>
+      <li>
+        <span>2</span>
+        <div><strong>Find the broken targets</strong><p>Click <HintCode hint="Checks every visible Daily Target against the Integer type">Scan</HintCode> and open <code>Validation Issues</code> to see the empty value, the word, and the question marks</p></div>
+      </li>
+      <li>
+        <span>3</span>
+        <div><strong>Repair all three together</strong><p>Open <code>Cleaning Tools</code> then <code>Fill Issues</code>, choose <span className="column-reference">Daily Target</span>, keep <code>Empty and invalid</code>, choose <code>Custom value</code>, enter <code>8</code>, then apply the fill</p></div>
+      </li>
+      <li>
+        <span>4</span>
+        <div><strong>Confirm the repair</strong><p>Scan again and 0.4C will unlock when every Daily Target is a valid Integer with the value 8</p></div>
+      </li>
+    </ol>
+  );
+}
+
+function BootRecoveryWalkthrough() {
+  return (
+    <ol className="walkthrough-list compact-walkthrough">
+      <li>
+        <span>1</span>
+        <div><strong>Prepare the meter columns</strong><p>Set <span className="column-reference">Start Reading</span>, <span className="column-reference">End Reading</span>, and <span className="column-reference">Usage</span> to <code>Number</code>, then scan to reveal the missing readings</p></div>
+      </li>
+      <li>
+        <span>2</span>
+        <div><strong>Build one relationship</strong><p>Open <code>Column Relationships</code>, keep <code>Mathematical relation</code>, choose <span className="column-reference">Usage</span> as the target and enter <span className="formula-reference">[End Reading] - [Start Reading]</span>, then add the relationship</p></div>
+      </li>
+      <li>
+        <span>3</span>
+        <div><strong>Apply every proven fix</strong><p>Click <code>Check all relationships</code>, choose <code>Select all fixable</code>, then <code>Apply selected fixes</code>. Three Usage values can be recovered from the other readings</p></div>
+      </li>
+      <li>
+        <span>4</span>
+        <div><strong>Move the impossible row</strong><p>Scan again and open <code>Validation Issues</code>. The remaining row is missing both Start Reading and Usage so the formula has nothing to work with, choose <code>Move rows to Data Bin</code> then scan one last time</p></div>
+      </li>
+    </ol>
+  );
+}
+
+function BootRelationshipWalkthrough() {
+  return (
+    <ol className="walkthrough-list">
+      <li>
+        <span>1</span>
+        <div><strong>Choose what to scan</strong><p>Only visible columns are included when you <HintCode hint="Checks every visible cell against the type and format selected for its column. Changing a column type changes what the next scan considers valid.">Scan</HintCode>. For now, <HintCode hint="Removes a column from the table and excludes it from scanning.">Hide</HintCode> everything except <span className="column-reference">Item</span>, <span className="column-reference">Quantity</span>, <span className="column-reference">Price Per Unit</span>, and <span className="column-reference">Total Spent</span></p></div>
+      </li>
+      <li>
+        <span>2</span>
+        <div><strong>Set the column rules</strong><p>Choose <code>Number</code> for <span className="column-reference">Quantity</span>, <span className="column-reference">Price Per Unit</span>, and <span className="column-reference">Total Spent</span>, then set <span className="column-reference">Item</span> to <code>Category</code> and allow only Cake, Coffee, Cookie, Juice, Salad, Sandwich, Smoothie, and Tea</p></div>
+      </li>
+      <li>
+        <span>3</span>
+        <div>
+          <strong>Connect Item and price with one Logical relation</strong>
+          <p>Open <HintCode hint="Learns matching pairs only from rows where both cells pass their column rules">Column Relationships</HintCode>, choose <code>Logical relation</code>, use <span className="column-reference">Item</span> as the anchor, then click <code>Find relations</code></p>
+          <div className="formula-reference-list">
+            <span className="formula-reference">Item ↔ Price Per Unit</span>
+          </div>
+          <p>Choose <span className="column-reference">Price Per Unit</span> from the results and verify it on the full file, then add the recommended relation. It can use Coffee to repair a missing 2 or use 2 to repair a missing Coffee</p>
+        </div>
+      </li>
+      <li>
+        <span>4</span>
+        <div>
+          <strong>Link the three number columns</strong>
+          <p>Switch to <code>Mathematical relation</code> and add these three rules:</p>
+          <div className="formula-reference-list">
+            <span className="formula-reference">Total Spent = [Quantity] * [Price Per Unit]</span>
+            <span className="formula-reference">Quantity = [Total Spent] / [Price Per Unit]</span>
+            <span className="formula-reference">Price Per Unit = [Total Spent] / [Quantity]</span>
+          </div>
+        </div>
+      </li>
+      <li>
+        <span>5</span>
+        <div><strong>Run the relationships in passes</strong><p>Click <HintCode hint="Runs every enabled Logical and Mathematical relation against the current data">Check all relationships</HintCode>, select every fixable row, and apply the fixes, then check again because one repaired cell may give another rule enough information to work</p></div>
+      </li>
+      <li>
+        <span>6</span>
+        <div><strong>Handle the dates without guessing</strong><p>Show <span className="column-reference">Transaction Date</span>, set it to <code>Date</code> with <code>YYYY-MM-DD</code>, then use <code>Missing Rules</code> to allow genuinely empty dates. Change known date formats or edit a date only when the correct value is clear</p></div>
+      </li>
+      <li>
+        <span>7</span>
+        <div><strong>Move only the hopeless rows</strong><p>After the relationships stop finding fixes, scan again and open <HintCode hint="Shows every empty or invalid cell found during the latest scan">Validation Issues</HintCode>. Use <HintCode hint="Moves affected rows out of the active table while keeping them recoverable">Move rows to Data Bin</HintCode> only when Item, price, quantity, and total leave no trustworthy way to recover the row, then open <code>Data Bin</code> if you want to review or restore anything</p></div>
+      </li>
+      <li>
+        <span>8</span>
+        <div><strong>Check only what the job needs</strong><p>Keep <span className="column-reference">Item</span>, the three number columns, and <span className="column-reference">Transaction Date</span> visible, then scan again. Payment Method and Location are still unknown here so the tutorial will not ask you to invent them</p></div>
+      </li>
+      <li>
+        <span>9</span>
+        <div><strong>Finish Boot Sequence</strong><p>Scan one last time after fixing the remaining columns and Boot Sequence will complete when every objective is clean</p></div>
+      </li>
+    </ol>
+  );
+}
+
 function getCellEditorForType(type, value, options) {
   if (type === "Date") {
     return { component: DateCellEditor };
@@ -4875,7 +5289,7 @@ function normalizeRow(row) {
   return normalized;
 }
 
-function createSchemaHistoryAction({ label, operation, rows, addedColumns, removedColumns, before, after, recipeStep }) {
+function createSchemaHistoryAction({ label, operation, rows, addedColumns, removedColumns, before, after, audit }) {
   const removedValues = removedColumns.length
     ? rows.map((row) => ({ rowId: row.__rowId, values: Object.fromEntries(removedColumns.map((column) => [column, row[column] ?? ""])) }))
     : [];
@@ -4888,7 +5302,7 @@ function createSchemaHistoryAction({ label, operation, rows, addedColumns, remov
     removedValues,
     before: cloneSerializable(before),
     after: cloneSerializable(after),
-    recipeStep,
+    audit,
   };
 }
 
@@ -4903,62 +5317,6 @@ function undoSchemaTransformRows(rows, action) {
   });
 }
 
-function buildNumericConversionChanges(rows, column, targetType) {
-  const changes = [];
-  for (const row of rows) {
-    const numericValue = parseNumericValueForConversion(row[column]);
-    if (numericValue === null) continue;
-    const after = targetType === "Integer"
-      ? String(Math.trunc(numericValue))
-      : Number.isInteger(numericValue) ? `${numericValue}.0` : String(numericValue);
-    if (String(row[column]) !== after) changes.push({ rowId: row.__rowId, column, before: row[column], after });
-  }
-  return { changes };
-}
-
-function mergeRelationshipRules(currentRules, recipeRules) {
-  const nextRules = currentRules.map((rule) => cloneSerializable(rule));
-  const indexByFormula = new Map(nextRules.map((rule, index) => [`${rule.targetColumn}\u0000${rule.formula}`, index]));
-  const usedIds = new Set(nextRules.map((rule) => rule.id));
-  for (const recipeRule of recipeRules) {
-    const key = `${recipeRule.targetColumn}\u0000${recipeRule.formula}`;
-    const existingIndex = indexByFormula.get(key);
-    if (existingIndex === undefined) {
-      const nextRule = cloneSerializable(recipeRule);
-      if (usedIds.has(nextRule.id)) nextRule.id = `relationship-${crypto.randomUUID()}`;
-      usedIds.add(nextRule.id);
-      nextRules.push(nextRule);
-      indexByFormula.set(key, nextRules.length - 1);
-    } else {
-      const existing = nextRules[existingIndex];
-      nextRules[existingIndex] = { ...cloneSerializable(recipeRule), id: existing.id };
-    }
-  }
-  return nextRules;
-}
-
-function getRecipeStepColumns(step) {
-  if (["findReplace", "fill", "textCleanup", "deduplicate", "deleteInvalidRows"].includes(step.type)) return step.columns ?? [];
-  if (["numericConversion", "dateConversion"].includes(step.type)) return [step.column].filter(Boolean);
-  if (step.type === "createColumn") return [];
-  if (step.type === "deleteColumns") return step.columns ?? [];
-  if (step.type === "splitColumn") return [step.sourceColumn].filter(Boolean);
-  if (step.type === "combineColumns") return step.sourceColumns ?? [];
-  return [];
-}
-
-function describeRecipeStep(step) {
-  const columns = getRecipeStepColumns(step);
-  if (step.type === "createColumn") return `${step.column} as ${step.dataType}`;
-  if (step.type === "deleteColumns") return step.columns.join(", ");
-  if (step.type === "splitColumn") return `${step.sourceColumn} into ${step.outputColumns.join(", ")}`;
-  if (step.type === "combineColumns") return `${step.sourceColumns.join(", ")} into ${step.outputColumn}`;
-  if (step.type === "numericConversion") return `${step.column} to ${step.targetType}`;
-  if (step.type === "dateConversion") return `${step.column} to ${getPreset(step.targetPresetId).name}`;
-  if (step.type === "relationshipFix") return `${step.relationshipIds?.length ?? 0} relationship rule${step.relationshipIds?.length === 1 ? "" : "s"}`;
-  return columns.length ? columns.join(", ") : "Uses the saved column rules";
-}
-
 function moveArrayItem(items, index, direction) {
   const nextIndex = index + direction;
   if (nextIndex < 0 || nextIndex >= items.length) return items;
@@ -4969,10 +5327,6 @@ function moveArrayItem(items, index, direction) {
 
 function cloneSerializable(value) {
   return JSON.parse(JSON.stringify(value));
-}
-
-function toFileName(value) {
-  return String(value ?? "recipe").trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "recipe";
 }
 
 function pickColumns(row, selectedColumns) {
@@ -5094,7 +5448,11 @@ function readSavedRelationships() {
   try {
     const savedRules = JSON.parse(window.localStorage.getItem(RELATIONSHIP_STORAGE_KEY) ?? "[]");
     return Array.isArray(savedRules)
-      ? savedRules.filter((rule) => rule?.id && rule?.targetColumn && rule?.formula)
+      ? savedRules
+        .map((rule) => ({ kind: "formula", ...rule }))
+        .filter((rule) => rule?.id && rule?.targetColumn && (
+          rule.kind === "lookup" ? rule.sourceColumn : rule.formula
+        ))
       : [];
   } catch {
     return [];
@@ -5102,6 +5460,7 @@ function readSavedRelationships() {
 }
 
 function validateRelationshipRule(rule, columns) {
+  if (rule.kind === "lookup") return validateLookupRule(rule, columns);
   if (!rule.targetColumn) return { valid: false, error: "Choose a target column." };
   if (!columns.includes(rule.targetColumn)) return { valid: false, error: `Target column “${rule.targetColumn}” is not in this file.` };
   if (!String(rule.formula ?? "").trim()) return { valid: false, error: "Enter a formula." };
@@ -5308,6 +5667,7 @@ function validateCreateColumnValue(operation) {
 }
 
 function getRelationshipRuleColumns(rule) {
+  if (rule.kind === "lookup") return [...new Set([rule.sourceColumn, rule.targetColumn].filter(Boolean))];
   const columns = [rule.targetColumn].filter(Boolean);
   try {
     columns.push(...parseFormula(rule.formula).references);

@@ -41,7 +41,8 @@ test("external challenges include a dataset and a complete story", () => {
 
 test("every campaign file has a full objective list", () => {
   for (const challenge of CHALLENGES) {
-    assert.ok(challenge.objectives.length >= 6);
+    const minimum = challenge.tutorial ? 1 : 6;
+    assert.ok(challenge.objectives.length >= minimum);
   }
 });
 
@@ -275,6 +276,43 @@ test("method objectives inspect fill metadata", () => {
   const objective = { kind: "method", method: "median", column: "Time", groupBy: "Priority" };
   const history = [{ recipeStep: { type: "fill", method: "median", columns: ["Time"], groupBy: "Priority" } }];
   assert.equal(evaluateObjective(objective, { history }).complete, true);
+});
+
+test("lookup objectives require a matching rule and applied safe fixes", () => {
+  const objective = { id: "lookup", kind: "lookupRecovery", source: "Code", target: "Name", minimumFixes: 2 };
+  const relationshipRules = [{ id: "lookup-rule", kind: "lookup", enabled: true, sourceColumn: "Code", targetColumn: "Name" }];
+  const incomplete = evaluateObjective(objective, { relationshipRules, history: [] });
+  assert.equal(incomplete.complete, false);
+  const complete = evaluateObjective(objective, {
+    relationshipRules,
+    history: [{
+      kind: "cells",
+      audit: { type: "lookupFix", relationshipIds: ["lookup-rule"] },
+      changes: [
+        { rowId: "one", column: "Name" },
+        { rowId: "two", column: "Name" },
+      ],
+    }],
+  });
+  assert.equal(complete.complete, true);
+
+  const reverseObjective = { id: "reverse-lookup", kind: "lookupRecovery", source: "Name", target: "Code", minimumFixes: 1 };
+  const twoWayRules = [{ ...relationshipRules[0], bidirectional: true }];
+  const reverseComplete = evaluateObjective(reverseObjective, {
+    relationshipRules: twoWayRules,
+    history: [{
+      kind: "cells",
+      audit: { type: "lookupFix", relationshipIds: ["lookup-rule"] },
+      changes: [{ rowId: "three", column: "Code" }],
+    }],
+  });
+  assert.equal(reverseComplete.complete, true);
+});
+
+test("Data Bin objectives use current recoverable rows", () => {
+  const objective = { id: "bin", kind: "rowsInBin", minimum: 1, maximum: 1 };
+  assert.equal(evaluateObjective(objective, { dataBin: [] }).complete, false);
+  assert.equal(evaluateObjective(objective, { dataBin: [{ row: { __rowId: "one" } }] }).complete, true);
 });
 
 test("optional phone objective accepts the configured null markers", () => {
@@ -585,6 +623,40 @@ test("boot sequence accepts keeping or deleting its broken date rows", () => {
     .filter((column) => String(row[column]).trim() !== "" && Number.isFinite(Number(row[column])))
     .length;
   const requiredRows = rows.filter((row) => validNumberCount(row) < 2);
+  const expectedItemPrices = new Map([
+    ["Cake", 3],
+    ["Coffee", 2],
+    ["Cookie", 1],
+    ["Juice", 3.5],
+    ["Salad", 5],
+    ["Sandwich", 4],
+    ["Smoothie", 4.5],
+    ["Tea", 1.5],
+  ]);
+  const numericValue = (value) => String(value).trim() ? Number(value) : Number.NaN;
+  const priceItems = new Map();
+  let priceFromItemFixes = 0;
+  let itemFromPriceFixes = 0;
+  for (const row of rows) {
+    const item = String(row.Item).trim();
+    assert.equal(["ERROR", "UNKNOWN"].includes(item), false);
+    const price = numericValue(row["Price Per Unit"]);
+    const quantity = numericValue(row.Quantity);
+    const total = numericValue(row["Total Spent"]);
+    if (expectedItemPrices.has(item) && Number.isFinite(price)) {
+      assert.equal(price, expectedItemPrices.get(item));
+      assert.equal(priceItems.get(price) ?? item, item);
+      priceItems.set(price, item);
+    }
+    if (Number.isFinite(quantity) && Number.isFinite(price) && Number.isFinite(total)) {
+      assert.equal(total, quantity * price);
+    }
+    if (expectedItemPrices.has(item) && !Number.isFinite(price)) priceFromItemFixes += 1;
+    if (!expectedItemPrices.has(item) && Number.isFinite(price)) itemFromPriceFixes += 1;
+  }
+  assert.equal(priceItems.size, expectedItemPrices.size);
+  assert.equal(priceFromItemFixes, 479);
+  assert.equal(itemFromPriceFixes, 915);
   const optionalDateRows = rows.filter((row) => (
     validNumberCount(row) >= 2
     && ["", "ERROR", "UNKNOWN"].includes(String(row["Transaction Date"]).trim())
@@ -601,6 +673,44 @@ test("boot sequence accepts keeping or deleting its broken date rows", () => {
       rows: [...requiredRows, ...optionalDateRows].map((row) => ({ row })),
     }],
   }).complete, true);
+});
+
+test("Issue Training starts with three bad targets and accepts the walkthrough repair", () => {
+  const challenge = CHALLENGES.find((item) => item.id === "boot-issue-training");
+  const sourceRows = challenge.createRows();
+  const badRows = sourceRows.filter((row) => row["Daily Target"] !== "8");
+  assert.equal(badRows.length, 3);
+
+  const rows = sourceRows.map((row) => ({ ...row, "Daily Target": "8" }));
+  const result = evaluateChallenge(challenge, {
+    rows,
+    columns: Object.keys(rows[0]),
+    columnRules: { "Daily Target": { type: "Integer" } },
+    scanIssues: [],
+    lastScannedAt: Date.now(),
+  });
+  assert.equal(result.complete, true);
+});
+
+test("Recovery Training repairs three Usage values and bins only the impossible row", () => {
+  const challenge = CHALLENGES.find((item) => item.id === "boot-recovery-training");
+  const sourceRows = challenge.createRows().map((row, index) => ({ ...row, __rowId: `meter-${index}` }));
+  assert.equal(sourceRows.filter((row) => !String(row.Usage).trim() || row.Usage === "ERROR").length, 4);
+  const impossibleRow = sourceRows.at(-1);
+  const rows = sourceRows.slice(0, -1).map((row) => ({
+    ...row,
+    Usage: String(Number(row["End Reading"]) - Number(row["Start Reading"])),
+  }));
+  const numberRules = Object.fromEntries(["Start Reading", "End Reading", "Usage"].map((column) => [column, { type: "Number" }]));
+  const result = evaluateChallenge(challenge, {
+    rows,
+    columns: ["Shift", "Start Reading", "End Reading", "Usage"],
+    columnRules: numberRules,
+    scanIssues: [],
+    lastScannedAt: Date.now(),
+    dataBin: [{ row: impossibleRow }],
+  });
+  assert.equal(result.complete, true);
 });
 
 test("duplicate objectives point players to the correct cleaning tool", () => {
@@ -679,28 +789,36 @@ test("online retail challenge data contains the planned mess and one exact solut
   assert.ok(gapRows.every((row) => cleanRetailDescription(row.Description)));
   assert.ok(gapRows.every((row) => !String(row.Invoice).toLocaleUpperCase().startsWith("C")));
 
-  const normalizedRows = normalizeRetailRows(parsed.data);
+  const loadedRows = parsed.data;
+  const countryObjective = challenge.objectives.find((objective) => objective.id === "retail-countries");
+  assert.ok(loadedRows.some((row) => row.Country === "Sunrise Island"));
+  assert.ok(loadedRows.some((row) => row.Country === "Rainy Kingdom"));
+  assert.ok(loadedRows.some((row) => row.Country === "EIRE"));
+  assert.equal(loadedRows.some((row) => row.Country === "Emerald Island"), false);
+  assert.ok(loadedRows.every((row) => !row.Country || row.Country === "EIRE" || countryObjective.values.includes(row.Country)));
+  const normalizedRows = normalizeRetailRows(loadedRows);
   assert.equal(countRetailDuplicates(normalizedRows, sourceColumns), 924);
-  const solvedRows = buildSolvedRetailRows(parsed.data, sourceColumns);
-  assert.equal(solvedRows.length, 98777);
+  const solvedRows = buildSolvedRetailRows(loadedRows, sourceColumns);
+  assert.equal(solvedRows.length, 99008);
   assert.equal(solvedRows.filter((row) => String(row.Invoice).toLocaleUpperCase().startsWith("C")).length, 1855);
   assert.equal(solvedRows.filter((row) => cleanRetailDescription(row.Description).toLocaleLowerCase() === "adjust bad debt").length, 3);
-  assert.equal(challenge.rules.find((rule) => rule.id === "retail-row-count").minimum, 98777);
+  assert.equal(challenge.rules.find((rule) => rule.id === "retail-row-count").minimum, 99008);
 });
 
 test("online retail challenge can complete every linked objective and protected rule", () => {
   const challenge = CHALLENGES.find((item) => item.id === "final-final-export");
   const parsed = loadRetailFixture();
+  const loadedRows = parsed.data;
   const sourceColumns = parsed.meta.fields;
   const initialEvaluation = evaluateChallenge(challenge, {
-    rows: parsed.data,
+    rows: loadedRows,
     columns: sourceColumns,
     columnRules: {},
     scanIssues: [],
   });
   assert.equal(initialEvaluation.completedCount, 0);
 
-  const rows = buildSolvedRetailRows(parsed.data, sourceColumns);
+  const rows = buildSolvedRetailRows(loadedRows, sourceColumns);
   const exportObjective = challenge.objectives.find((objective) => objective.id === "retail-export-schema");
   const countryObjective = challenge.objectives.find((objective) => objective.id === "retail-countries");
   const columns = exportObjective.expectedColumns;
@@ -757,11 +875,16 @@ test("online retail challenge can complete every linked objective and protected 
     columnRules,
     scanIssues: [],
     lastScannedAt: new Date(),
-    history: [],
+    relationshipRules: [{ id: "retail-lookup", kind: "lookup", enabled: true, sourceColumn: "StockCode", targetColumn: "Description" }],
+    history: [{
+      kind: "cells",
+      audit: { type: "lookupFix", relationshipIds: ["retail-lookup"] },
+      changes: rows.slice(0, 231).map((row, index) => ({ rowId: row.__rowId ?? `retail-${index}`, column: "Description" })),
+    }],
   });
 
-  assert.equal(evaluation.totalCount, 10);
-  assert.equal(evaluation.completedCount, 10);
+  assert.equal(evaluation.totalCount, 11);
+  assert.equal(evaluation.completedCount, 11);
   assert.equal(evaluation.rulesPassed, true);
   assert.equal(evaluation.complete, true);
   assert.equal(evaluation.stars, 3);
@@ -784,7 +907,7 @@ function cleanRetailDescription(value) {
 
 function cleanRetailCountry(value) {
   const country = String(value ?? "").trim();
-  return country === "EIRE" ? "Ireland" : country;
+  return country === "EIRE" ? "Emerald Island" : country;
 }
 
 function retailRowKey(row, columns) {
@@ -823,15 +946,27 @@ function normalizeRetailRows(sourceRows) {
     const customerId = String(row["Customer ID"] ?? "").trim();
     const counts = countriesByCustomer.get(customerId) ?? new Map();
     row.Country = [...counts.entries()]
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0] ?? "United Kingdom";
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0] ?? "Rainy Kingdom";
   }
   return rows;
 }
 
 function buildSolvedRetailRows(sourceRows, sourceColumns) {
+  const normalizedRows = normalizeRetailRows(sourceRows);
+  const descriptionsByCode = new Map();
+  for (const row of normalizedRows) {
+    if (!row.StockCode || !row.Description) continue;
+    const values = descriptionsByCode.get(row.StockCode) ?? new Set();
+    values.add(row.Description);
+    descriptionsByCode.set(row.StockCode, values);
+  }
   const seen = new Set();
   const solvedRows = [];
-  for (const row of normalizeRetailRows(sourceRows)) {
+  for (const sourceRow of normalizedRows) {
+    const candidates = descriptionsByCode.get(sourceRow.StockCode);
+    const row = !sourceRow.Description && candidates?.size === 1
+      ? { ...sourceRow, Description: [...candidates][0] }
+      : sourceRow;
     const key = retailRowKey(row, sourceColumns);
     if (seen.has(key)) continue;
     seen.add(key);

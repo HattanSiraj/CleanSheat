@@ -1,7 +1,7 @@
-import { isBootComplete } from "./progress.js";
+import { BOOT_CHALLENGE_IDS, isBootComplete } from "./progress.js";
 
-const BOOT_CHALLENGE_ID = "boot-sequence";
-export const BOOT_WORKSPACE_ID = `challenge:${BOOT_CHALLENGE_ID}`;
+const BOOT_WORKSPACE_IDS = BOOT_CHALLENGE_IDS.map((challengeId) => `challenge:${challengeId}`);
+export const BOOT_WORKSPACE_ID = BOOT_WORKSPACE_IDS[0];
 export const FREE_CLEAN_PREVIEW = [
   "Bring any CSV into the full cleaning workspace without scores, objectives or challenge rules",
   "Nothing is graded and every tool is available so you can experiment or clean a real file",
@@ -9,7 +9,7 @@ export const FREE_CLEAN_PREVIEW = [
 
 export function getBootMachineState(progress, savedWorkspaceIds = [], sessionInserted = false, sessionEjected = false) {
   const complete = isBootComplete(progress);
-  const saved = savedWorkspaceIds.includes(BOOT_WORKSPACE_ID);
+  const saved = BOOT_WORKSPACE_IDS.some((workspaceId) => savedWorkspaceIds.includes(workspaceId));
   const phase = sessionEjected
     ? "waiting"
     : complete
@@ -28,8 +28,16 @@ export function getBootMachineState(progress, savedWorkspaceIds = [], sessionIns
 }
 
 export function getInitialMachineChallengeId(challenges, progress, savedWorkspaceIds = [], pack = "core") {
-  const tutorial = challenges.find((challenge) => challenge.tutorial);
-  if (!isBootComplete(progress)) return tutorial?.id ?? challenges[0]?.id ?? "";
+  const tutorials = getTutorialChallenges(challenges);
+  const tutorial = getNextTutorialChallenge(challenges, progress);
+  if (!isBootComplete(progress)) {
+    const savedIncomplete = tutorials.find((challenge) => (
+      isTutorialChallengeUnlocked(challenge, challenges, progress)
+      && savedWorkspaceIds.includes(`challenge:${challenge.id}`)
+      && !progress.records?.[challenge.id]?.complete
+    ));
+    return savedIncomplete?.id ?? tutorial?.id ?? tutorials[0]?.id ?? challenges[0]?.id ?? "";
+  }
 
   const missions = getPackChallenges(challenges, pack);
   const savedIncomplete = missions.find((challenge) => (
@@ -41,6 +49,27 @@ export function getInitialMachineChallengeId(challenges, progress, savedWorkspac
     ?? missions[0]?.id
     ?? tutorial?.id
     ?? "";
+}
+
+export function getTutorialChallenges(challenges) {
+  return challenges
+    .filter((challenge) => challenge.tutorial)
+    .sort((left, right) => (left.tutorialStage ?? 0) - (right.tutorialStage ?? 0));
+}
+
+export function getNextTutorialChallenge(challenges, progress) {
+  const tutorials = getTutorialChallenges(challenges);
+  return tutorials.find((challenge) => !progress.records?.[challenge.id]?.complete)
+    ?? tutorials.at(-1)
+    ?? null;
+}
+
+export function isTutorialChallengeUnlocked(challenge, challenges, progress) {
+  if (!challenge?.tutorial) return true;
+  const tutorials = getTutorialChallenges(challenges);
+  const challengeIndex = tutorials.findIndex((item) => item.id === challenge.id);
+  if (challengeIndex <= 0) return true;
+  return tutorials.slice(0, challengeIndex).every((item) => progress.records?.[item.id]?.complete);
 }
 
 export function getPackChallenges(challenges, pack = "core") {

@@ -10,6 +10,7 @@ import {
   isScoreableAction,
 } from "./game/scoring.js";
 import {
+  BOOT_CHALLENGE_IDS,
   createGameProgress,
   getBestGrade,
   isBootComplete,
@@ -36,7 +37,10 @@ import {
   getBootMachineState,
   getChallengeModuleState,
   getInitialMachineChallengeId,
+  getNextTutorialChallenge,
   getPackChallenges,
+  getTutorialChallenges,
+  isTutorialChallengeUnlocked,
   isCoreCampaignComplete,
   isHellCampaignComplete,
 } from "./game/campaignMachine.js";
@@ -102,6 +106,10 @@ test("game progress ignores old versions and unlocks missions after Boot Sequenc
   const progress = {
     ...createGameProgress(),
     records: {
+      "boot-scan-training": { complete: true, grade: "B" },
+      "boot-category-training": { complete: true, grade: "B" },
+      "boot-issue-training": { complete: true, grade: "B" },
+      "boot-recovery-training": { complete: true, grade: "B" },
       "boot-sequence": { complete: true, grade: "B" },
       cafe: { complete: true, grade: "A" },
     },
@@ -110,6 +118,16 @@ test("game progress ignores old versions and unlocks missions after Boot Sequenc
   const restored = readGameProgress(storage);
   assert.equal(isBootComplete(restored), true);
   assert.equal(getBestGrade(restored), "A");
+
+  values.set("cleansheet.game-progress", JSON.stringify({
+    version: 1,
+    achievementRulesVersion: 2,
+    records: { "boot-sequence": { complete: true, grade: "B" } },
+    achievements: {},
+  }));
+  const migrated = readGameProgress(storage);
+  assert.equal(isBootComplete(migrated), true);
+  assert.ok(BOOT_CHALLENGE_IDS.every((challengeId) => migrated.records[challengeId]?.complete));
 });
 
 test("boot machine state follows the tutorial save and completion record", () => {
@@ -124,7 +142,7 @@ test("boot machine state follows the tutorial save and completion record", () =>
   assert.equal(getBootMachineState(empty, [BOOT_WORKSPACE_ID]).phase, "incomplete");
   const complete = {
     ...empty,
-    records: { "boot-sequence": { complete: true, grade: "A" } },
+    records: Object.fromEntries(BOOT_CHALLENGE_IDS.map((challengeId) => [challengeId, { complete: true, grade: "A" }])),
   };
   assert.equal(getBootMachineState(complete).phase, "online");
   assert.deepEqual(getBootMachineState(complete, [], false, true), {
@@ -142,16 +160,24 @@ test("Free Clean has a two line hover preview", () => {
 
 test("repair console selects saved work before the next unfinished challenge", () => {
   const challenges = [
-    { id: "boot-sequence", number: 0, tutorial: true },
+    { id: "boot-scan-training", number: 0, tutorial: true, tutorialStage: 1 },
+    { id: "boot-category-training", number: 0, tutorial: true, tutorialStage: 2 },
+    { id: "boot-issue-training", number: 0, tutorial: true, tutorialStage: 3 },
+    { id: "boot-recovery-training", number: 0, tutorial: true, tutorialStage: 4 },
+    { id: "boot-sequence", number: 0, tutorial: true, tutorialStage: 5 },
     { id: "one", number: 1 },
     { id: "two", number: 2 },
     { id: "three", number: 3 },
   ];
   const empty = createGameProgress();
-  assert.equal(getInitialMachineChallengeId(challenges, empty), "boot-sequence");
+  assert.equal(getInitialMachineChallengeId(challenges, empty), "boot-scan-training");
   const booted = {
     ...empty,
     records: {
+      "boot-scan-training": { complete: true },
+      "boot-category-training": { complete: true },
+      "boot-issue-training": { complete: true },
+      "boot-recovery-training": { complete: true },
       "boot-sequence": { complete: true },
       one: { complete: true },
     },
@@ -169,9 +195,31 @@ test("repair console selects saved work before the next unfinished challenge", (
   assert.equal(getInitialMachineChallengeId(challenges, finished), "one");
 });
 
+test("boot training stages unlock and select in order", () => {
+  const tutorials = BOOT_CHALLENGE_IDS.map((id, index) => ({ id, tutorial: true, tutorialStage: index + 1 }));
+  let progress = createGameProgress();
+  assert.deepEqual(getTutorialChallenges([...tutorials].reverse()).map((challenge) => challenge.id), BOOT_CHALLENGE_IDS);
+  for (let index = 0; index < tutorials.length; index += 1) {
+    assert.equal(getNextTutorialChallenge(tutorials, progress).id, tutorials[index].id);
+    assert.equal(isTutorialChallengeUnlocked(tutorials[index], tutorials, progress), true);
+    if (tutorials[index + 1]) {
+      assert.equal(isTutorialChallengeUnlocked(tutorials[index + 1], tutorials, progress), false);
+    }
+    progress = {
+      ...progress,
+      records: { ...progress.records, [tutorials[index].id]: { complete: true } },
+    };
+  }
+  assert.equal(isBootComplete(progress), true);
+});
+
 test("campaign packs unlock and select their own unfinished files", () => {
   const challenges = [
-    { id: "boot-sequence", number: 0, tutorial: true, pack: "boot" },
+    { id: "boot-scan-training", number: 0, tutorial: true, tutorialStage: 1, pack: "boot" },
+    { id: "boot-category-training", number: 0, tutorial: true, tutorialStage: 2, pack: "boot" },
+    { id: "boot-issue-training", number: 0, tutorial: true, tutorialStage: 3, pack: "boot" },
+    { id: "boot-recovery-training", number: 0, tutorial: true, tutorialStage: 4, pack: "boot" },
+    { id: "boot-sequence", number: 0, tutorial: true, tutorialStage: 5, pack: "boot" },
     { id: "core-one", number: 1, pack: "core" },
     { id: "core-two", number: 2, pack: "core" },
     { id: "hell-two", number: 2, pack: "hell", packOrder: 2 },
@@ -180,6 +228,10 @@ test("campaign packs unlock and select their own unfinished files", () => {
   const coreProgress = {
     ...createGameProgress(),
     records: {
+      "boot-scan-training": { complete: true },
+      "boot-category-training": { complete: true },
+      "boot-issue-training": { complete: true },
+      "boot-recovery-training": { complete: true },
       "boot-sequence": { complete: true },
       "core-one": { complete: true },
       "core-two": { complete: true },

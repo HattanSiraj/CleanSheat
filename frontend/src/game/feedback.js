@@ -78,7 +78,23 @@ export function createActionFeedback(action, direction = "apply", options = {}) 
     }, options);
   }
 
-  if (action.feedback?.kind === "formula" || action.recipeStep?.type === "relationshipFix") {
+  if (action.feedback?.kind === "lookup") {
+    return makeFeedbackEvent({
+      kind: "formula",
+      message: `${count.toLocaleString()} LOOKUP ${count === 1 ? "FIX" : "FIXES"}`,
+      detail: "Verified matches applied",
+      count,
+      targets,
+      sourceColumns: action.feedback?.sourceColumns ?? [],
+      targetColumns: action.feedback?.targetColumns ?? uniqueColumns(targets),
+      sound: "formula",
+      duration: 1150,
+      priority: 2,
+      particles: 10,
+    }, options);
+  }
+
+  if (action.feedback?.kind === "formula" || action.audit?.type === "relationshipFix" || action.recipeStep?.type === "relationshipFix") {
     return makeFeedbackEvent({
       kind: "formula",
       message: `${count.toLocaleString()} FORMULA ${count === 1 ? "FIX" : "FIXES"}`,
@@ -94,13 +110,13 @@ export function createActionFeedback(action, direction = "apply", options = {}) 
     }, options);
   }
 
-  const deletedRows = countDeletedRows(action);
-  if (deletedRows) {
+  const binnedRows = countBinnedRows(action);
+  if (binnedRows) {
     return makeFeedbackEvent({
       kind: "delete",
-      message: `${deletedRows.toLocaleString()} ${deletedRows === 1 ? "ROW" : "ROWS"} DISCARDED`,
-      detail: action.label ?? "Invalid rows removed",
-      count: deletedRows,
+      message: `${binnedRows.toLocaleString()} ${binnedRows === 1 ? "ROW" : "ROWS"} MOVED TO BIN`,
+      detail: action.label ?? "Rows quarantined",
+      count: binnedRows,
       targets: [],
       sound: "deleteData",
       duration: 1050,
@@ -219,15 +235,17 @@ function countActionChanges(action) {
   }
   if (action.kind === "cells") return action.changes?.length ?? 0;
   if (action.kind === "deleteRows") return action.rows?.length ?? 0;
+  if (["moveRowsToBin", "restoreRowsFromBin"].includes(action.kind)) return action.entries?.length ?? 0;
   if (action.kind === "schema") return 1;
   return 0;
 }
 
-function countDeletedRows(action) {
+function countBinnedRows(action) {
   if (!action) return 0;
   if (action.kind === "compound") {
-    return (action.actions ?? []).reduce((total, child) => total + countDeletedRows(child), 0);
+    return (action.actions ?? []).reduce((total, child) => total + countBinnedRows(child), 0);
   }
+  if (action.kind === "moveRowsToBin") return action.entries?.length ?? 0;
   return action.kind === "deleteRows" ? action.rows?.length ?? 0 : 0;
 }
 

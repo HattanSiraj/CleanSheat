@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { CHALLENGES } from "../challengeData.js";
 import { CLEANING_TOOLS } from "./cleaningTools.js";
 import {
   getChallengeCleaningTools,
@@ -72,4 +73,12 @@ test("Free Clean unlocks every cleaning tool", () => {
   const access = getCleaningToolAccess({ freeClean: true });
   assert.deepEqual(access.unlockedIds, CLEANING_TOOLS.map((tool) => tool.id));
   assert.deepEqual(access.lockedIds, []);
+});
+
+test("every tutorial stage gives the player access to the Data Bin", () => {
+  const tutorials = CHALLENGES.filter((challenge) => challenge.tutorial);
+  assert.equal(tutorials.length, 5);
+  for (const challenge of tutorials) {
+    assert.equal(getChallengeCleaningTools(challenge).includes("dataBin"), true, challenge.id);
+  }
 });

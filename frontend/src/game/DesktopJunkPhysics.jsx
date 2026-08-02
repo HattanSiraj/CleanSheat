@@ -723,7 +723,6 @@ export function DesktopJunkPhysics({
       }}
       aria-label="Loose desktop files"
     >
-      <span className="desktop-junk-help">Pull a file off its pin and throw it</span>
       {files.filter((file) => !file.discarded).map((file) => (
         <button
           type="button"

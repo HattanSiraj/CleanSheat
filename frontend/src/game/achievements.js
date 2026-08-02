@@ -38,7 +38,7 @@ function isEarned(id, context, progress) {
   const complete = Boolean(evaluation?.complete);
   const objectiveResults = new Map((evaluation?.objectives ?? []).map((objective) => [objective.id, objective]));
   if (id === "first-boot") return complete && challenge?.id === "boot-sequence";
-  if (id === "first-cleanup") return complete && challenge?.id !== "boot-sequence";
+  if (id === "first-cleanup") return complete && !challenge?.tutorial;
   if (id === "one-scan-wonder") return runStats.maxCombo >= 3;
   if (id === "regex-wizard") {
     const regexObjectives = (challenge?.objectives ?? []).filter((objective) => objective.kind === "patternMatch");
@@ -52,7 +52,7 @@ function isEarned(id, context, progress) {
       objective.kind === "calculatedColumn" && objectiveResults.get(objective.id)?.complete
     )).length >= 3;
   }
-  if (id === "row-guardian") return complete && runStats.deletedRows === 0;
+  if (id === "row-guardian") return complete && (runStats.binnedRows ?? runStats.deletedRows) === 0;
   if (id === "dataset-exorcist") return complete && challenge?.id === "dataset-from-hell";
   if (id === "final-export") return complete && challenge?.id === "final-final-export";
   if (id === "hell-survivor") {

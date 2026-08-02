@@ -62,6 +62,7 @@ export function getActionChangeSize(action) {
   }
   if (action.kind === "cells") return action.changes?.length ?? 0;
   if (action.kind === "deleteRows") return action.rows?.length ?? 0;
+  if (["moveRowsToBin", "restoreRowsFromBin"].includes(action.kind)) return action.entries?.length ?? 0;
   if (action.kind === "schema") return action.rowCount ?? 0;
   return 0;
 }
@@ -74,6 +75,14 @@ export function getDeletedRowCount(action) {
   return action.kind === "deleteRows" ? action.rows?.length ?? 0 : 0;
 }
 
+export function getBinnedRowCount(action) {
+  if (!action) return 0;
+  if (action.kind === "compound") {
+    return (action.actions ?? []).reduce((sum, item) => sum + getBinnedRowCount(item), 0);
+  }
+  return action.kind === "moveRowsToBin" ? action.entries?.length ?? 0 : 0;
+}
+
 export function createRunStats() {
   return {
     moves: 0,
@@ -82,6 +91,7 @@ export function createRunStats() {
     scans: 0,
     undoCount: 0,
     deletedRows: 0,
+    binnedRows: 0,
     largestChange: 0,
     clipbitClicks: 0,
     completedObjectiveIds: [],
@@ -90,9 +100,11 @@ export function createRunStats() {
 }
 
 export function normalizeRunStats(value) {
-  return {
+  const normalized = {
     ...createRunStats(),
     ...(value ?? {}),
     completedObjectiveIds: Array.isArray(value?.completedObjectiveIds) ? value.completedObjectiveIds : [],
   };
+  if (value?.binnedRows === undefined && value?.deletedRows !== undefined) normalized.binnedRows = value.deletedRows;
+  return normalized;
 }

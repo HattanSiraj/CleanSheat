@@ -5,7 +5,10 @@ import {
   getBootMachineState,
   getChallengeModuleState,
   getInitialMachineChallengeId,
+  getNextTutorialChallenge,
   getPackChallenges,
+  getTutorialChallenges,
+  isTutorialChallengeUnlocked,
   isCoreCampaignComplete,
   isHellCampaignComplete,
 } from "./campaignMachine.js";
@@ -19,6 +22,130 @@ const MODULE_POWER_DELAY_MS = 180;
 const LOCKED_REACTION_MS = 1500;
 const HELL_INSERT_MS = 1750;
 const HELL_EJECT_MS = 720;
+const BOOT_DIAL_MIN_ANGLE = 0;
+const BOOT_DIAL_MAX_ANGLE = 180;
+const BOOT_DIAL_DEGREES_PER_PIXEL = 0.65;
+const BOOT_DIAL_RADIUS_PX = 92;
+
+function getBootDialAngle(index, count) {
+  if (count <= 1) return 0;
+  return BOOT_DIAL_MIN_ANGLE + (index / (count - 1)) * (BOOT_DIAL_MAX_ANGLE - BOOT_DIAL_MIN_ANGLE);
+}
+
+function getBootDialMarkerStyle(index, count) {
+  const angle = getBootDialAngle(index, count);
+  const radians = angle * (Math.PI / 180);
+  return {
+    angle,
+    style: {
+      "--boot-dial-position-x": `${-Math.cos(radians) * BOOT_DIAL_RADIUS_PX}px`,
+      "--boot-dial-position-y": `${8 + (1 - Math.sin(radians)) * BOOT_DIAL_RADIUS_PX}px`,
+    },
+  };
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.min(Math.max(value, minimum), maximum);
+}
+
+function TerminalTopDeck() {
+  return (
+    <div className="terminal-top-deck" aria-hidden="true">
+      <span className="terminal-model-plate"><strong>CT 86</strong><small>FIELD TERMINAL</small></span>
+      <span className="terminal-top-vent"><i /><i /><i /><i /><i /><i /><i /><i /></span>
+      <span className="terminal-power-array"><i /><i /><i /><i /></span>
+    </div>
+  );
+}
+
+function TerminalControlStrip() {
+  return (
+    <div className="terminal-control-strip" aria-hidden="true">
+      <span className="terminal-control-label"><strong>OPERATOR BUS</strong><small>INPUT ROUTER 04</small></span>
+      <span className="terminal-toggle-bank"><i /><i /><i /><i /></span>
+      <span className="terminal-control-meter"><i /><i /><i /><i /><i /><i /></span>
+      <span className="terminal-key-switch"><i /></span>
+    </div>
+  );
+}
+
+function DriveMechanism() {
+  return (
+    <span className="drive-mechanism" aria-hidden="true">
+      <i /><i /><i />
+    </span>
+  );
+}
+
+function RackChassisHardware() {
+  return (
+    <div className="rack-chassis-hardware" aria-hidden="true">
+      <span className="rack-top-cap"><strong>CLN 06</strong><i /><i /><i /></span>
+      <span className="rack-side-bus left"><i /><i /><i /><i /><i /><i /><i /><i /></span>
+      <span className="rack-side-bus right"><i /><i /><i /><i /><i /><i /><i /><i /></span>
+    </div>
+  );
+}
+
+function ModuleFaceplateHardware() {
+  return (
+    <span className="module-faceplate-hardware" aria-hidden="true">
+      <span className="module-faceplate-vent"><i /><i /><i /><i /></span>
+      <span className="module-faceplate-lock" />
+    </span>
+  );
+}
+
+function RackCoolingBay({ powered, boosted, onBoost }) {
+  const status = boosted ? "OVERDRIVE" : powered ? "FLOW 72%" : "PUMP OFF";
+
+  return (
+    <section className={`rack-cooling-bay ${powered ? "powered" : "offline"} ${boosted ? "boosted" : ""}`} aria-label="Server cooling bay">
+      <div className="rack-cooling-header">
+        <span><strong>LIQUID LOOP</strong><small>RACK COOLING 02</small></span>
+        <span className="rack-cooling-status"><i />{status}</span>
+      </div>
+      <div className="rack-cooling-body">
+        <svg className="coolant-pipe-map" viewBox="0 0 620 150" preserveAspectRatio="none" aria-hidden="true">
+          <path className="coolant-pipe-shell" d="M75 43 H172 V23 H494 V43 H553 V108 H494 V127 H172 V108 H75 Z" />
+          <path className="coolant-pipe-fluid" d="M75 43 H172 V23 H494 V43 H553 V108 H494 V127 H172 V108 H75 Z" pathLength="100" />
+        </svg>
+        <div className="coolant-reservoir" aria-hidden="true">
+          <span className="coolant-reservoir-cap" />
+          <span className="coolant-reservoir-glass">
+            <span className="coolant-liquid"><i /><i /><i /></span>
+          </span>
+          <small>RES 72</small>
+        </div>
+        <div className="rack-cooling-fans">
+          {["A", "B"].map((fan) => (
+            <button
+              type="button"
+              className="rack-cooling-fan"
+              onClick={onBoost}
+              disabled={!powered}
+              aria-label={`Boost cooling fan ${fan}`}
+              aria-pressed={boosted}
+              data-game-sound="custom"
+              key={fan}
+            >
+              <span className="rack-fan-rotor" aria-hidden="true"><i /></span>
+              <small>FAN {fan}</small>
+            </button>
+          ))}
+        </div>
+        <div className="coolant-pump" aria-hidden="true">
+          <span className="coolant-pump-wheel"><i /></span>
+          <small>PUMP 04</small>
+        </div>
+      </div>
+      <div className="rack-cooling-footer" aria-hidden="true">
+        <span>{powered ? "CLICK A FAN TO BOOST THE LOOP" : "COOLING BUS WAITING FOR POWER"}</span>
+        <span className="coolant-pressure-meter"><i /><i /><i /><i /><i /><i /></span>
+      </div>
+    </section>
+  );
+}
 
 export function CampaignMap({
   challenges,
@@ -39,9 +166,11 @@ export function CampaignMap({
   onHellTransition,
   containmentSignal = 0,
   onContainmentComplete,
+  initialChallengeId = "",
   reducedEffects = false,
 }) {
-  const tutorial = challenges.find((challenge) => challenge.tutorial);
+  const tutorials = getTutorialChallenges(challenges);
+  const tutorial = getNextTutorialChallenge(challenges, progress);
   const coreMissions = getPackChallenges(challenges, "core");
   const hellMissions = getPackChallenges(challenges, "hell");
   const missions = activePack === "hell" ? hellMissions : coreMissions;
@@ -49,17 +178,22 @@ export function CampaignMap({
   const bootComplete = isBootComplete(progress);
   const hellUnlocked = isCoreCampaignComplete(challenges, progress);
   const hellComplete = isHellCampaignComplete(challenges, progress);
-  const bootSaved = savedWorkspaceIds.includes(`challenge:${tutorial?.id}`);
+  const bootSaved = tutorials.some((challenge) => savedWorkspaceIds.includes(`challenge:${challenge.id}`));
   const machineRef = useRef(null);
   const outputPortRef = useRef(null);
   const driveRef = useRef(null);
   const hellDriveRef = useRef(null);
   const modulePortRefs = useRef(new Map());
+  const dialDraggingRef = useRef(false);
+  const dialPointerStartXRef = useRef(0);
+  const dialDragStartAngleRef = useRef(0);
+  const dialLiveAngleRef = useRef(0);
   const bootTimersRef = useRef([]);
   const lockedTimerRef = useRef(null);
   const machineAlertTimerRef = useRef(null);
+  const coolingBoostTimerRef = useRef(null);
   const lastPowerLeakRef = useRef("");
-  const selectionTouchedRef = useRef(false);
+  const selectionTouchedRef = useRef(Boolean(initialChallengeId));
   const onSoundRef = useRef(onSound);
   const onPowerSequenceCompleteRef = useRef(onPowerSequenceComplete);
   const onPackChangeRef = useRef(onPackChange);
@@ -78,12 +212,16 @@ export function CampaignMap({
   const [machineAlert, setMachineAlert] = useState(null);
   const [powerLeakModuleId, setPowerLeakModuleId] = useState("");
   const [selectedChallengeId, setSelectedChallengeId] = useState(() => (
-    getInitialMachineChallengeId(challenges, progress, savedWorkspaceIds, activePack)
+    challenges.some((challenge) => challenge.id === initialChallengeId)
+      ? initialChallengeId
+      : getInitialMachineChallengeId(challenges, progress, savedWorkspaceIds, activePack)
   ));
   const [isFreeCleanSelected, setIsFreeCleanSelected] = useState(false);
   const [noPowerChallengeId, setNoPowerChallengeId] = useState("");
   const [cableGeometry, setCableGeometry] = useState({ width: 0, height: 0, paths: [] });
   const [systemReducedMotion, setSystemReducedMotion] = useState(false);
+  const [coolingBoosted, setCoolingBoosted] = useState(false);
+  const [dialDragAngle, setDialDragAngle] = useState(null);
   const [poweredCount, setPoweredCount] = useState(() => (
     bootComplete && !powerSequenceSignal ? missions.length : 0
   ));
@@ -110,6 +248,10 @@ export function CampaignMap({
     ?? tutorial
     ?? challenges[0];
   const noPowerChallenge = challenges.find((challenge) => challenge.id === noPowerChallengeId);
+  const selectedTutorialIndex = tutorials.findIndex((challenge) => challenge.id === selectedChallengeId);
+  const dialStageIndex = selectedTutorialIndex >= 0 ? selectedTutorialIndex : Math.max(tutorials.length - 1, 0);
+  const dialAngle = getBootDialAngle(dialStageIndex, tutorials.length);
+  const dialInteractionDisabled = hellMode || ["booting", "ejecting"].includes(bootPhase);
 
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -118,6 +260,15 @@ export function CampaignMap({
     query.addEventListener?.("change", update);
     return () => query.removeEventListener?.("change", update);
   }, []);
+
+  useEffect(() => {
+    if (machinePowered) return;
+    setCoolingBoosted(false);
+    if (coolingBoostTimerRef.current) {
+      window.clearTimeout(coolingBoostTimerRef.current);
+      coolingBoostTimerRef.current = null;
+    }
+  }, [machinePowered]);
 
   useEffect(() => {
     if (!containmentSignal || activePack !== "hell") return undefined;
@@ -151,6 +302,7 @@ export function CampaignMap({
     if (["inserting", "ejecting"].includes(hellPhase)) return;
     setHellPhase(activePack === "hell" ? "active" : "idle");
     setIsFreeCleanSelected(false);
+    if (selectionTouchedRef.current) return;
     setSelectedChallengeId(getInitialMachineChallengeId(
       challenges,
       progress,
@@ -283,6 +435,7 @@ export function CampaignMap({
     clearBootTimers();
     if (lockedTimerRef.current) window.clearTimeout(lockedTimerRef.current);
     if (machineAlertTimerRef.current) window.clearTimeout(machineAlertTimerRef.current);
+    if (coolingBoostTimerRef.current) window.clearTimeout(coolingBoostTimerRef.current);
   }, []);
 
   function clearBootTimers() {
@@ -425,13 +578,75 @@ export function CampaignMap({
     onSoundRef.current?.("open");
   }
 
-  function selectTutorial() {
-    if (hellMode || !diskInserted || ["booting", "ejecting"].includes(bootPhase)) return;
+  function selectTutorial(challenge, allowLockedPreview = false) {
+    if (hellMode || (!diskInserted && !allowLockedPreview) || ["booting", "ejecting"].includes(bootPhase)) return;
+    if (!isTutorialChallengeUnlocked(challenge, challenges, progress)) {
+      onSoundRef.current?.("error");
+      if (!allowLockedPreview) return;
+    }
     selectionTouchedRef.current = true;
     setNoPowerChallengeId("");
     setIsFreeCleanSelected(false);
-    setSelectedChallengeId(tutorial.id);
+    setSelectedChallengeId(challenge.id);
     onSoundRef.current?.("open");
+  }
+
+  function constrainBootDialAngle(angle) {
+    return clamp(angle, BOOT_DIAL_MIN_ANGLE, BOOT_DIAL_MAX_ANGLE);
+  }
+
+  function readDraggedBootDialAngle(event) {
+    return constrainBootDialAngle(
+      dialDragStartAngleRef.current
+        + (event.clientX - dialPointerStartXRef.current) * BOOT_DIAL_DEGREES_PER_PIXEL,
+    );
+  }
+
+  function beginBootDialDrag(event) {
+    if (dialInteractionDisabled || !tutorials.length) return;
+    event.preventDefault();
+    dialDraggingRef.current = true;
+    dialPointerStartXRef.current = event.clientX;
+    dialDragStartAngleRef.current = dialAngle;
+    dialLiveAngleRef.current = dialAngle;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setDialDragAngle(dialAngle);
+  }
+
+  function moveBootDial(event) {
+    if (!dialDraggingRef.current) return;
+    const nextAngle = readDraggedBootDialAngle(event);
+    dialLiveAngleRef.current = nextAngle;
+    setDialDragAngle(nextAngle);
+  }
+
+  function finishBootDialDrag(event) {
+    if (!dialDraggingRef.current) return;
+    const finalAngle = dialLiveAngleRef.current;
+    const stageIndex = tutorials.length <= 1
+      ? 0
+      : Math.round(((finalAngle - BOOT_DIAL_MIN_ANGLE) / (BOOT_DIAL_MAX_ANGLE - BOOT_DIAL_MIN_ANGLE)) * (tutorials.length - 1));
+    dialDraggingRef.current = false;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    setDialDragAngle(null);
+    selectTutorial(tutorials[clamp(stageIndex, 0, tutorials.length - 1)], true);
+  }
+
+  function cancelBootDialDrag() {
+    dialDraggingRef.current = false;
+    setDialDragAngle(null);
+  }
+
+  function handleBootDialKeyDown(event) {
+    if (dialInteractionDisabled || !tutorials.length) return;
+    let nextIndex = dialStageIndex;
+    if (event.key === "ArrowLeft") nextIndex -= 1;
+    else if (event.key === "ArrowRight") nextIndex += 1;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = tutorials.length - 1;
+    else return;
+    event.preventDefault();
+    selectTutorial(tutorials[clamp(nextIndex, 0, tutorials.length - 1)], true);
   }
 
   function selectFreeClean() {
@@ -442,11 +657,23 @@ export function CampaignMap({
     onSoundRef.current?.("open");
   }
 
+  function boostCooling() {
+    if (!machinePowered) return;
+    if (coolingBoostTimerRef.current) window.clearTimeout(coolingBoostTimerRef.current);
+    setCoolingBoosted(true);
+    onSoundRef.current?.("machinePower");
+    coolingBoostTimerRef.current = window.setTimeout(() => {
+      setCoolingBoosted(false);
+      coolingBoostTimerRef.current = null;
+    }, reducedMotion ? 1200 : 5200);
+  }
+
   function renderChallengeActions(challenge) {
     if (!challenge) return null;
     const state = getChallengeModuleState(challenge, progress, savedWorkspaceIds, machinePowered);
     if (state.locked) return null;
     if (challenge.tutorial && !diskInserted) return null;
+    if (challenge.tutorial && !isTutorialChallengeUnlocked(challenge, challenges, progress)) return null;
     if (state.saved) {
       return (
         <>
@@ -556,15 +783,24 @@ export function CampaignMap({
       );
     }
 
-    const challenge = bootComplete ? selectedChallenge : tutorial;
+    const challenge = bootComplete
+      ? selectedChallenge
+      : selectedChallenge?.tutorial ? selectedChallenge : tutorial;
     const state = getChallengeModuleState(challenge, progress, savedWorkspaceIds, machinePowered);
-    const status = challenge.tutorial && !bootComplete
-      ? bootSaved ? "BOOT INCOMPLETE" : "BOOT DISK READY"
+    const tutorialUnlocked = isTutorialChallengeUnlocked(challenge, challenges, progress);
+    const status = challenge.tutorial
+      ? !tutorialUnlocked
+        ? "STAGE LOCKED"
+        : state.record?.complete
+          ? "STAGE COMPLETE"
+          : state.saved
+            ? "STAGE IN PROGRESS"
+            : `0.${challenge.tutorialStage}C READY`
       : state.status;
     return (
       <div className="machine-screen-details">
         <div className="machine-screen-topline">
-          <span>{challenge.tutorial ? "BOOT 0" : challenge.pack === "hell" ? `H${challenge.number}` : `FILE ${challenge.number}`}</span>
+          <span>{challenge.tutorial ? `BOOT 0.${challenge.tutorialStage}C` : challenge.pack === "hell" ? `H${challenge.number}` : `FILE ${challenge.number}`}</span>
           <span>{status}</span>
         </div>
         <CorruptedText
@@ -577,7 +813,7 @@ export function CampaignMap({
         <p>{challenge.subtitle}</p>
         <div className="machine-screen-stats">
           <span>{challenge.rowCount.toLocaleString()} rows</span>
-          <span>{challenge.objectives.length} objectives</span>
+          <span>{challenge.objectives.length} objective{challenge.objectives.length === 1 ? "" : "s"}</span>
           <span>{state.record?.complete ? `${state.record.completions ?? 1} clears` : state.saved ? "Save detected" : "Fresh file"}</span>
         </div>
         <div className="machine-screen-actions">
@@ -598,6 +834,14 @@ export function CampaignMap({
         </div>
         <div className="campaign-menu-actions">
           {soundControls}
+          <button
+            type="button"
+            className="campaign-menu-button"
+            onClick={selectFreeClean}
+            disabled={sessionDiskEjected || ["booting", "ejecting"].includes(bootPhase)}
+          >
+            Free Clean
+          </button>
           <button type="button" className="campaign-menu-button" onClick={onAchievements}>Achievements</button>
         </div>
       </header>
@@ -659,6 +903,7 @@ export function CampaignMap({
             </svg>
 
             <section className={`boot-computer ${bootPhase} ${diskInserted ? "disk-loaded" : ""}`}>
+              <TerminalTopDeck />
               <div className="boot-computer-monitor">
                 <div className="boot-monitor-bezel">
                   <div className="boot-monitor-nameplate" aria-hidden="true">
@@ -674,6 +919,7 @@ export function CampaignMap({
                       <span className="pixel-data-bug" />
                     </div>
                     {renderComputerScreen()}
+                    <span className="terminal-crt-reflection" aria-hidden="true" />
                     <span className="boot-screen-scanlines" aria-hidden="true" />
                   </div>
                   <div className="boot-monitor-footer" aria-hidden="true">
@@ -689,41 +935,68 @@ export function CampaignMap({
               </div>
 
               <div className="boot-computer-base">
+                <TerminalControlStrip />
                 <div className="boot-mode-selectors">
-                  <button
-                    type="button"
-                    className={`boot-selector ${selectedChallengeId === tutorial?.id && !isFreeCleanSelected ? "selected" : ""}`}
-                    onClick={selectTutorial}
-                    disabled={hellMode || !diskInserted || ["booting", "ejecting"].includes(bootPhase)}
-                    data-game-sound="custom"
+                  <div
+                    className={`boot-stage-dial ${dialDragAngle !== null ? "dragging" : ""}`}
+                    style={{ "--boot-dial-angle": `${dialDragAngle ?? dialAngle}deg` }}
                   >
-                    <span>BOOT 0</span>
-                    <strong>BOOT SEQUENCE</strong>
-                    <span className="challenge-module-preview boot-selector-preview" aria-hidden="true">
-                      {(tutorial.preview ?? tutorial.story.slice(0, 2)).map((sentence) => (
-                        <span className="challenge-preview-sentence" key={sentence}>{sentence}</span>
-                      ))}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`boot-selector free-clean-selector ${isFreeCleanSelected ? "selected" : ""}`}
-                    onClick={selectFreeClean}
-                    disabled={sessionDiskEjected || ["booting", "ejecting"].includes(bootPhase)}
-                    data-game-sound="custom"
-                  >
-                    <span>UTILITY</span>
-                    <strong>FREE CLEAN</strong>
-                    <span className="challenge-module-preview boot-selector-preview" aria-hidden="true">
-                      {FREE_CLEAN_PREVIEW.map((sentence) => (
-                        <span className="challenge-preview-sentence" key={sentence}>{sentence}</span>
-                      ))}
-                    </span>
-                  </button>
+                    <div className="boot-dial-face">
+                      <div className="boot-dial-positions" role="group" aria-label="Boot stage selector">
+                        {tutorials.map((challenge, index) => {
+                          const unlocked = isTutorialChallengeUnlocked(challenge, challenges, progress);
+                          const complete = Boolean(progress.records?.[challenge.id]?.complete);
+                          const selected = selectedChallengeId === challenge.id && !isFreeCleanSelected;
+                          const stageCode = `0.${challenge.tutorialStage}C`;
+                          const marker = getBootDialMarkerStyle(index, tutorials.length);
+                          return (
+                            <button
+                              type="button"
+                              aria-pressed={selected}
+                              aria-label={`BOOT ${challenge.tutorialStage} ${stageCode} ${challenge.title.toUpperCase()} ${complete ? "done" : unlocked ? "ready" : "locked"}`}
+                              className={`boot-dial-position ${selected ? "selected" : ""} ${complete ? "complete" : ""} ${unlocked ? "" : "locked"}`}
+                              onClick={() => selectTutorial(challenge)}
+                              disabled={hellMode || !diskInserted || !unlocked || ["booting", "ejecting"].includes(bootPhase)}
+                              data-dial-angle={marker.angle}
+                              data-game-sound="custom"
+                              key={challenge.id}
+                              style={marker.style}
+                            >
+                              <span>{stageCode}</span>
+                              <small>{complete ? "DONE" : unlocked ? "READY" : "LOCKED"}</small>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="boot-dial-hardware">
+                        <span className="boot-dial-scale" aria-hidden="true" />
+                        <button
+                          type="button"
+                          className="boot-dial-knob"
+                          aria-label={`Turn boot stage dial, selected 0.${tutorials[dialStageIndex]?.tutorialStage ?? 1}C`}
+                          disabled={dialInteractionDisabled}
+                          onPointerDown={beginBootDialDrag}
+                          onPointerMove={moveBootDial}
+                          onPointerUp={finishBootDialDrag}
+                          onPointerCancel={cancelBootDialDrag}
+                          onLostPointerCapture={cancelBootDialDrag}
+                          onKeyDown={handleBootDialKeyDown}
+                          data-game-sound="custom"
+                        >
+                          <i />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="boot-dial-readout" aria-live="polite">
+                      <span>SELECTED // 0.{tutorials[dialStageIndex]?.tutorialStage ?? 1}C</span>
+                      <strong>{tutorials[dialStageIndex]?.title ?? "NO STAGE"}</strong>
+                    </div>
+                  </div>
                 </div>
                 <div className="boot-drive-stack">
                   <div className="boot-drive-panel">
                     <span className={`boot-drive-light ${diskInserted ? "active" : ""}`} />
+                    <DriveMechanism />
                     <div ref={driveRef} className={`boot-floppy-drive ${bootDriveStatus}`}>
                       <span>{bootPhase === "ejecting" ? "EJECTING" : diskInserted ? "DISK LOADED" : "INSERT DISK"}</span>
                       {diskInserted && <i className="boot-inserted-disk" aria-hidden="true" />}
@@ -745,6 +1018,7 @@ export function CampaignMap({
                   </div>
                   <div className={`boot-drive-panel hell-drive-panel ${hellUnlocked ? "unlocked" : "locked"}`}>
                     <span className={`boot-drive-light ${hellDiskInserted ? "active" : hellUnlocked ? "available" : ""}`} />
+                    <DriveMechanism />
                     <div ref={hellDriveRef} className={`boot-floppy-drive hell-floppy-drive ${hellDriveStatus}`}>
                       <span>{!hellUnlocked
                         ? "LOCKED"
@@ -777,7 +1051,7 @@ export function CampaignMap({
                 <div className="boot-base-diagnostics" aria-hidden="true">
                   <strong>SYS BUS</strong>
                   <span className="boot-base-meter"><i /><i /><i /><i /><i /><i /><i /><i /></span>
-                  <small>{hellMode ? "CONTAINMENT FAILED" : machinePowered ? "RAM 640K OK" : diskInserted ? "READING MEDIA" : "WAITING FOR DISK"}</small>
+                  <small>{hellMode ? "CONTAINMENT FAILED" : machinePowered ? "RAM 64MB" : diskInserted ? "READING MEDIA" : "WAITING FOR DISK"}</small>
                   <span className="boot-base-vents"><i /><i /><i /><i /><i /></span>
                 </div>
               </div>
@@ -785,6 +1059,7 @@ export function CampaignMap({
             </section>
 
             <section className="challenge-module-bank" aria-label="Challenge modules">
+              <RackChassisHardware />
               <div className="module-bank-header">
                 <div className="module-bank-title">
                   <span>{hellMode ? "BREACH BUS" : "FILE BUS"}</span>
@@ -795,6 +1070,11 @@ export function CampaignMap({
                   <span className="module-bank-lights" aria-hidden="true"><i /><i /><i /><i /></span>
                   <strong>{machinePowered ? "ONLINE" : "NO POWER"}</strong>
                 </div>
+              </div>
+              <div className="module-bank-service-strip" aria-hidden="true">
+                <span>THERMAL</span>
+                <span className="rack-thermal-meter"><i /><i /><i /><i /><i /><i /><i /><i /></span>
+                <strong>{machinePowered ? "BUS STABLE" : "COLD START"}</strong>
               </div>
               <span className="module-bank-rail rail-left" aria-hidden="true"><i /><i /><i /><i /><i /><i /></span>
               <span className="module-bank-rail rail-right" aria-hidden="true"><i /><i /><i /><i /><i /><i /></span>
@@ -824,6 +1104,7 @@ export function CampaignMap({
                         className={`challenge-module-port ${powered ? "powered" : ""}`}
                         aria-hidden="true"
                       />
+                      <ModuleFaceplateHardware />
                       <span className="challenge-module-number">{challenge.pack === "hell" ? `H${challenge.number}` : `FILE ${challenge.number}`}</span>
                       <CorruptedText
                         as="strong"
@@ -852,7 +1133,13 @@ export function CampaignMap({
                 <span>DATA BUS A</span>
                 <span className="module-bank-bus"><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /></span>
                 <strong>{machinePowered ? "LINKED" : "ISOLATED"}</strong>
+                <span className="rack-power-supplies"><i /><i /><i /></span>
               </div>
+              <RackCoolingBay
+                powered={machinePowered}
+                boosted={coolingBoosted}
+                onBoost={boostCooling}
+              />
             </section>
           </div>
         </section>

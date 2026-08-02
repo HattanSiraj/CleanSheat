@@ -247,6 +247,22 @@ export function evaluateObjective(objective, context) {
     result = { complete: used, detail: used ? "Method appears in the cleaning history" : "Use the requested filling method" };
   }
 
+  if (objective.kind === "lookupRecovery") {
+    result = evaluateLookupRecovery(objective, context);
+  }
+
+  if (objective.kind === "rowsInBin") {
+    const count = (context.dataBin ?? []).filter((entry) => (
+      !objective.sourceAction || entry.sourceAction === objective.sourceAction
+    )).length;
+    const minimum = objective.minimum ?? 1;
+    const maximum = objective.maximum ?? Number.POSITIVE_INFINITY;
+    result = {
+      complete: count >= minimum && count <= maximum,
+      detail: `${count.toLocaleString()} row${count === 1 ? "" : "s"} currently in the Data Bin`,
+    };
+  }
+
   if (objective.kind === "groupMedianFill") {
     result = evaluateGroupMedianFill(objective, context);
   }
@@ -461,13 +477,14 @@ function evaluateGroupConsistencyRecovery(objective, rows) {
   }
   const inconsistent = [...groups.values()].filter((values) => values.size > 1).length;
   const enoughGroups = groups.size >= (objective.minimumGroups ?? 1);
+  const groupLabel = objective.groupBy || "value";
   const detail = missing
     ? `${missing.toLocaleString()} ${objective.column} gaps remain`
     : inconsistent
-      ? `${inconsistent.toLocaleString()} customer groups still disagree`
+      ? `${inconsistent.toLocaleString()} ${groupLabel} groups still disagree`
       : !enoughGroups
-        ? "Too few customer groups remain"
-        : `${groups.size.toLocaleString()} customer groups are consistent`;
+        ? `Too few ${groupLabel} groups remain`
+        : `${groups.size.toLocaleString()} ${groupLabel} groups are consistent`;
   return { complete: rows.length > 0 && missing === 0 && inconsistent === 0 && enoughGroups, detail };
 }
 
@@ -704,14 +721,14 @@ export function evaluateRule(rule, context) {
   }
 
   if (rule.kind === "guidedRowCleanup") {
-    result = evaluateGuidedRowCleanup(rule, context.history ?? []);
+    result = evaluateGuidedRowCleanup(rule, context.dataBin ?? [], context.history ?? []);
   }
 
   return { ...rule, ...result };
 }
 
-function evaluateGuidedRowCleanup(rule, history) {
-  const deletedRows = collectDeletedRows(history);
+function evaluateGuidedRowCleanup(rule, dataBin, history) {
+  const deletedRows = dataBin.length ? dataBin.map((entry) => entry.row) : collectDeletedRows(history);
   const optionalValues = new Set((rule.optionalInvalidValues ?? []).map((value) => String(value).trim().toLocaleLowerCase()));
   let requiredDeleted = 0;
   let optionalDeleted = 0;
@@ -732,12 +749,12 @@ function evaluateGuidedRowCleanup(rule, history) {
   const requiredCount = rule.requiredDeletions ?? 0;
   const complete = requiredDeleted >= requiredCount && unrelatedDeleted === 0;
   const detail = unrelatedDeleted
-    ? `${unrelatedDeleted.toLocaleString()} unrelated row${unrelatedDeleted === 1 ? "" : "s"} were deleted`
+      ? `${unrelatedDeleted.toLocaleString()} unrelated row${unrelatedDeleted === 1 ? "" : "s"} moved to the Bin`
     : requiredDeleted < requiredCount
-      ? `${requiredDeleted.toLocaleString()} / ${requiredCount.toLocaleString()} unrecoverable number rows removed`
+      ? `${requiredDeleted.toLocaleString()} / ${requiredCount.toLocaleString()} unrecoverable number rows moved`
       : optionalDeleted
-        ? `${requiredDeleted.toLocaleString()} number rows and ${optionalDeleted.toLocaleString()} empty date rows removed`
-        : `${requiredDeleted.toLocaleString()} unrecoverable number rows removed`;
+        ? `${requiredDeleted.toLocaleString()} number rows and ${optionalDeleted.toLocaleString()} empty date rows moved`
+        : `${requiredDeleted.toLocaleString()} unrecoverable number rows moved`;
   return { complete, detail };
 }
 
@@ -748,8 +765,8 @@ function collectDeletedRows(history) {
       (action.actions ?? []).forEach(visit);
       return;
     }
-    if (action?.kind !== "deleteRows") return;
-    for (const item of action.rows ?? []) {
+    if (!["deleteRows", "moveRowsToBin"].includes(action?.kind)) return;
+    for (const item of action.entries ?? action.rows ?? []) {
       const row = item?.row ?? item;
       if (!row) continue;
       const id = row.__rowId ?? `deleted-${deletedById.size}`;
@@ -758,6 +775,42 @@ function collectDeletedRows(history) {
   };
   history.forEach(visit);
   return [...deletedById.values()];
+}
+
+function evaluateLookupRecovery(objective, context) {
+  const rule = (context.relationshipRules ?? []).find((item) => (
+    item.kind === "lookup"
+    && item.enabled !== false
+    && (
+      (item.sourceColumn === objective.source && item.targetColumn === objective.target)
+      || (
+        item.bidirectional === true
+        && item.sourceColumn === objective.target
+        && item.targetColumn === objective.source
+      )
+    )
+  ));
+  if (!rule) return { complete: false, detail: `Create a Logical relation from ${objective.source} to ${objective.target}` };
+  const changes = [];
+  visitHistory(context.history ?? [], (action) => {
+    if (action.audit?.type !== "lookupFix" || !action.audit.relationshipIds?.includes(rule.id)) return;
+    changes.push(...(action.changes ?? []).filter((change) => change.column === objective.target));
+  });
+  const uniqueRows = new Set(changes.map((change) => change.rowId)).size;
+  const minimum = objective.minimumFixes ?? 1;
+  return {
+    complete: uniqueRows >= minimum,
+    detail: uniqueRows >= minimum
+      ? `${uniqueRows.toLocaleString()} values recovered from verified matches`
+      : `${uniqueRows.toLocaleString()} / ${minimum.toLocaleString()} safe Logical relation fixes applied`,
+  };
+}
+
+function visitHistory(history, visitor) {
+  for (const action of history) {
+    visitor(action);
+    if (action.kind === "compound") visitHistory(action.actions ?? [], visitor);
+  }
 }
 
 function emptyEvaluation() {

@@ -1,34 +1,34 @@
 const RETAIL_SOURCE_COLUMNS = ["Invoice", "StockCode", "Description", "Quantity", "InvoiceDate", "Price", "Customer ID", "Country"];
 const RETAIL_COUNTRIES = [
-  "Australia",
-  "Austria",
-  "Bahrain",
-  "Belgium",
-  "Channel Islands",
-  "Cyprus",
-  "Denmark",
-  "Finland",
-  "France",
-  "Germany",
-  "Greece",
-  "Hong Kong",
-  "Iceland",
-  "Ireland",
-  "Israel",
-  "Italy",
-  "Japan",
-  "Lebanon",
-  "Lithuania",
-  "Netherlands",
-  "Norway",
-  "Poland",
-  "Portugal",
-  "Singapore",
-  "Spain",
-  "Sweden",
-  "Switzerland",
-  "United Arab Emirates",
-  "United Kingdom",
+  "Southern Wilds",
+  "Alpine Court",
+  "Pearl Island",
+  "Waffle District",
+  "Tidal Outposts",
+  "Copper Island",
+  "Crown Coast",
+  "Midnight Lakes",
+  "Velvet Republic",
+  "Iron Workshop",
+  "Marble Isles",
+  "Neon Harbor",
+  "Frost Island",
+  "Emerald Island",
+  "Crossroads",
+  "Boot Kingdom",
+  "Sunrise Island",
+  "Cedar Coast",
+  "Amber Woods",
+  "Windmill Lowlands",
+  "Fjord Kingdom",
+  "White Eagle Plains",
+  "Atlantic Gate",
+  "Lion City",
+  "Sunstone Kingdom",
+  "Northern Workshop",
+  "Clockwork Alps",
+  "Mirage Towers",
+  "Rainy Kingdom",
 ];
 const RETAIL_EXPORT_COLUMNS = [
   "Invoice",
@@ -44,18 +44,231 @@ const RETAIL_EXPORT_COLUMNS = [
   "Customer ID",
   "Country",
 ];
+const BOOT_ITEMS = ["Cake", "Coffee", "Cookie", "Juice", "Salad", "Sandwich", "Smoothie", "Tea"];
 
 const CORE_CHALLENGES = [
   {
-    id: "boot-sequence",
+    id: "boot-scan-training",
     revision: 2,
     number: 0,
+    tutorialStage: 1,
+    title: "Scanner Training",
+    subtitle: "The ABC 123",
+    difficulty: "Boot 1",
+    preview: [
+      "Start with twelve rows and learn how column types change what Scan looks for",
+      "The values are already trustworthy and Clipbit will show you how to prove it",
+    ],
+    rowCount: 12,
+    accent: "teal",
+    tutorial: true,
+    story: [
+      "The AI overlord has agreed to start with something small and simple because the last test subjects could not handle the pressure",
+      "PLEASE DO NOT FREAK OUT, grab yourself a cup of coffee and give it a shot because we believe in you, human",
+      "Change the column type and prove the report is clean, you cannot break anything here because you can always restart",
+    ],
+    hints: [],
+    assistant: {
+      start: "Welcome to Stage 1 and please enjoy this very reasonable twelve row file",
+      noProgress: "Click Tickets Closed and set it to Integer before scanning again",
+      win: "You cleaned one column and the computer has decided you may see a second one",
+    },
+    office: {
+      sender: "Mona",
+      department: "IT training",
+      start: "This is the easy file and I have personally removed every possible surprise",
+      trouble: [
+        "The scanner found {{issueLabel}} in Tickets Closed so open the walkthrough if you need the next click",
+        "Still seeing {{issueLabel}} and fortunately all of them are in the same column",
+      ],
+      progress: "{{objective}} is fixed and Stage 1 is almost done",
+      cleanScan: "Tickets Closed looks clean so the boot check should be ready",
+      delete: "You were not supposed to delete anyone from training but I admire the confidence",
+      formula: "There are no formulas here and somehow you found one anyway",
+      schema: "The training file changed shape and I am pretending that was planned",
+      win: "Stage 1 complete and the second training file is unlocked",
+    },
+    objectives: [
+      { id: "boot-scan-column", title: "Verify Tickets Closed", kind: "scanClean", columns: ["Tickets Closed"], expectedType: "Integer" },
+    ],
+    rules: [
+      { id: "boot-scan-rows", title: "Keep all twelve agents", kind: "rowCount", minimum: 12, maximum: 12 },
+    ],
+    toolAccess: { cleaningTools: ["dataBin"] },
+    createRows: createBootScanRows,
+  },
+  {
+    id: "boot-category-training",
+    revision: 2,
+    number: 0,
+    tutorialStage: 2,
+    title: "Category Training",
+    subtitle: "Three allowed choices and four creative mistakes",
+    difficulty: "Boot 2",
+    preview: [
+      "Learn Text Cleanup and turn a cleaned column into a Category",
+      "Repair a tiny request queue before the full Boot Sequence starts",
+    ],
+    rowCount: 15,
+    accent: "orange",
+    tutorial: true,
+    story: [
+      "The second training file came from a request form with exactly three Status buttons",
+      "People still managed to submit lowercase words and extra spaces even with only three buttons",
+      "Normalize the writing then turn Status into a Category",
+    ],
+    hints: [],
+    assistant: {
+      start: "Stage 2 contains three valid choices and four values trying to become a fourth choice",
+      noProgress: "Clean the Status writing then set the column to Category",
+      win: "The request queue agrees on three words and another training file just appeared",
+    },
+    office: {
+      sender: "Mona",
+      department: "IT training",
+      start: "The form had three buttons and somehow received seven spellings",
+      trouble: [
+        "Status still has {{issueLabel}} and all three correct choices are in the walkthrough",
+        "The queue is still inventing new Status values so check Allowed Values",
+      ],
+      progress: "{{objective}} is fixed and the request queue has stopped arguing",
+      cleanScan: "The Status column looks clean so run the final boot check",
+      delete: "The requests needed a Status and not a disappearance",
+      formula: "A formula will not teach Status how to spell Open",
+      schema: "The request queue changed shape and now I have questions",
+      win: "Stage 2 complete and Issue Training is ready",
+    },
+    objectives: [
+      { id: "boot-category-values", title: "Repair the Status choices", kind: "allowedValues", column: "Status", expectedType: "Category", values: ["Open", "Waiting", "Closed"] },
+      { id: "boot-category-scan", title: "Pass the Status scan", kind: "scanClean", columns: ["Status"], expectedType: "Category" },
+    ],
+    rules: [
+      { id: "boot-category-rows", title: "Keep all fifteen requests", kind: "rowCount", minimum: 15, maximum: 15 },
+    ],
+    toolAccess: { cleaningTools: ["textCleanup", "dataBin"] },
+    createRows: createBootCategoryRows,
+  },
+  {
+    id: "boot-issue-training",
+    revision: 1,
+    number: 0,
+    tutorialStage: 3,
+    title: "Issue Training",
+    subtitle: "The daily target is eight and three cells disagree",
+    difficulty: "Boot 3",
+    preview: [
+      "Learn how Scan feeds Validation Issues and Fill Issues",
+      "Repair three bad targets with one known replacement value",
+    ],
+    rowCount: 18,
+    accent: "orange",
+    tutorial: true,
+    story: [
+      "Every support agent has the same daily target of eight tickets",
+      "Three cells forgot the number and replaced it with nothing, a word, and whatever two question marks are supposed to mean",
+      "Find all three problems and repair them together because clicking every cell would be deeply embarrassing for the computer",
+    ],
+    hints: [],
+    assistant: {
+      start: "The target is eight and I have checked this twice because trust is currently unavailable",
+      noProgress: "Scan Daily Target as Integer then let Fill Issues replace every broken target with 8",
+      win: "All eighteen agents have the same target and nobody had to count on their fingers",
+    },
+    office: {
+      sender: "Mona",
+      department: "IT training",
+      start: "Daily Target should be eight for everyone and three cells are being difficult",
+      trouble: [
+        "Daily Target still has {{issueLabel}} so check Validation Issues before guessing",
+        "The target is still eight and the broken cells remain committed to being wrong",
+      ],
+      progress: "{{objective}} is fixed and the training queue is almost believable",
+      cleanScan: "Daily Target passed the scan so the next dial position should wake up",
+      delete: "Those agents needed a target and not a trip to the Data Bin",
+      formula: "Eight does not need a formula but I admire the machinery",
+      schema: "The tiny training file changed shape and somehow became more complicated",
+      win: "Issue Training complete and Recovery Training is online",
+    },
+    objectives: [
+      { id: "boot-issue-values", title: "Restore every daily target to 8", kind: "patternMatch", column: "Daily Target", expectedType: "Integer", pattern: "^8$" },
+      { id: "boot-issue-scan", title: "Pass the Daily Target scan", kind: "scanClean", columns: ["Daily Target"], expectedType: "Integer" },
+    ],
+    rules: [
+      { id: "boot-issue-rows", title: "Keep all eighteen agents", kind: "rowCount", minimum: 18, maximum: 18 },
+    ],
+    toolAccess: { cleaningTools: ["fillIssues", "dataBin"] },
+    createRows: createBootIssueRows,
+  },
+  {
+    id: "boot-recovery-training",
+    revision: 1,
+    number: 0,
+    tutorialStage: 4,
+    title: "Recovery Training",
+    subtitle: "Meter readings, one formula and one lost row",
+    difficulty: "Boot 4",
+    preview: [
+      "Build one subtraction relationship and repair every recoverable Usage value",
+      "Learn why one row belongs in Data Bin while the others do not",
+    ],
+    rowCount: 16,
+    accent: "teal",
+    tutorial: true,
+    story: [
+      "A training meter records its Start Reading, End Reading, and Usage for every shift",
+      "Usage can be recovered by subtracting Start Reading from End Reading unless both Start Reading and Usage disappear",
+      "Repair what the numbers can prove and move the one hopeless row to Data Bin",
+    ],
+    hints: [],
+    assistant: {
+      start: "This file only needs one formula and one responsible act of giving up",
+      noProgress: "Build Usage from End Reading minus Start Reading then check every fixable row",
+      win: "The meter report works and the one impossible row is waiting in Data Bin for future scientists",
+    },
+    office: {
+      sender: "Mona",
+      department: "IT training",
+      start: "Usage equals End Reading minus Start Reading and one row has lost too much information",
+      trouble: [
+        "The meter report still has {{issueLabel}} so check the relationship results",
+        "Some Usage values can be calculated and one row absolutely cannot",
+      ],
+      progress: "{{objective}} is fixed and the meter has stopped lying about one more shift",
+      cleanScan: "The remaining readings look clean so check that the impossible row reached Data Bin",
+      delete: "Only the row missing both Start Reading and Usage belongs in Data Bin",
+      formula: "The subtraction worked and several Usage cells have returned from the void",
+      schema: "The meter report changed shape which was not part of this training exercise",
+      win: "Recovery Training complete and the final Boot Sequence is ready",
+    },
+    objectives: [
+      { id: "boot-recovery-types", title: "Set all meter readings to Number", kind: "types", expected: { "Start Reading": "Number", "End Reading": "Number", Usage: "Number" } },
+      { id: "boot-recovery-formula", title: "Make every remaining Usage value add up", kind: "formula", left: "End Reading", right: "Start Reading", target: "Usage", operator: "-", tolerance: 0.001 },
+      { id: "boot-recovery-scan", title: "Pass the meter reading scan", kind: "scanClean", columns: ["Start Reading", "End Reading", "Usage"], expectedType: "Number" },
+    ],
+    rules: [
+      {
+        id: "boot-recovery-bin",
+        title: "Move only the unrecoverable meter row",
+        kind: "guidedRowCleanup",
+        requiredColumns: ["Start Reading", "End Reading", "Usage"],
+        minimumValidRequiredValues: 2,
+        requiredDeletions: 1,
+      },
+    ],
+    toolAccess: { cleaningTools: ["dataBin"] },
+    createRows: createBootRecoveryRows,
+  },
+  {
+    id: "boot-sequence",
+    revision: 4,
+    number: 0,
+    tutorialStage: 5,
     title: "Boot Sequence",
     subtitle: "The training file is somehow already broken",
-    difficulty: "Tutorial",
+    difficulty: "Boot 5",
     preview: [
       "Learn the cleaning tools by repairing a small sales file one problem at a time",
-      "You will set types, build formulas, clean categories and decide what to do with missing dates",
+      "You will set types, build formulas, handle dates and quarantine rows that cannot be recovered",
     ],
     rowCount: 10000,
     accent: "teal",
@@ -64,7 +277,7 @@ const CORE_CHALLENGES = [
     story: [
       "CleanSheet OS failed its morning check and the training file is leaking ERROR and UNKNOWN everywhere",
       "I am Clipbit your highly qualified recovery assistant and I definitely did not break it before you arrived",
-      "Repair the numbers categories and dates then remove the rows that cannot be calculated and the rest of the desktop will wake up",
+      "Repair the numbers and dates then move rows that cannot be calculated to the Data Bin and the rest of the desktop will wake up",
     ],
     hints: [],
     assistant: {
@@ -88,17 +301,19 @@ const CORE_CHALLENGES = [
       win: "Boot complete and I am closing this ticket before anything else catches fire",
     },
     objectives: [
+      { id: "boot-items", title: "Keep only the eight real Items", kind: "allowedValues", column: "Item", expectedType: "Category", values: BOOT_ITEMS },
+      { id: "boot-price-lookup", title: "Recover prices from Item", kind: "lookupRecovery", source: "Item", target: "Price Per Unit", minimumFixes: 25 },
+      { id: "boot-item-lookup", title: "Recover Items from price", kind: "lookupRecovery", source: "Price Per Unit", target: "Item", minimumFixes: 500 },
+      { id: "boot-one-price-per-item", title: "Keep one price for every Item", kind: "groupConsistencyRecovery", column: "Price Per Unit", groupBy: "Item", minimumGroups: 8 },
+      { id: "boot-one-item-per-price", title: "Keep one Item for every price", kind: "groupConsistencyRecovery", column: "Item", groupBy: "Price Per Unit", minimumGroups: 8 },
       { id: "boot-numbers", title: "Clean the three number columns", kind: "scanClean", columns: ["Quantity", "Price Per Unit", "Total Spent"], expectedTypes: { Quantity: "Number", "Price Per Unit": "Number", "Total Spent": "Number" } },
       { id: "boot-formula", title: "Make every total add up", kind: "formula", left: "Quantity", right: "Price Per Unit", target: "Total Spent", operator: "*", tolerance: 0.01 },
-      { id: "boot-items", title: "Repair the Item choices", kind: "allowedValues", column: "Item", expectedType: "Category", values: ["Coffee", "Tea", "Sandwich", "Salad", "Cake", "Cookie", "Smoothie", "Juice"] },
-      { id: "boot-payments", title: "Repair the Payment Method choices", kind: "allowedValues", column: "Payment Method", expectedType: "Category", values: ["Cash", "Credit Card", "Digital Wallet"] },
-      { id: "boot-location", title: "Repair the Location choices", kind: "allowedValues", column: "Location", expectedType: "Category", values: ["In-store", "Takeaway"] },
       { id: "boot-dates", title: "Clean every transaction date", kind: "patternMatch", column: "Transaction Date", expectedType: "Date", pattern: "^\\d{4}-\\d{2}-\\d{2}$", allowBlank: true, requireAllowedMissingWhenBlank: true },
     ],
     rules: [
       {
         id: "boot-row-cleanup",
-        title: "Only remove rows that cannot be recovered",
+        title: "Only move rows that cannot be recovered",
         kind: "guidedRowCleanup",
         requiredColumns: ["Quantity", "Price Per Unit", "Total Spent"],
         minimumValidRequiredValues: 2,
@@ -225,7 +440,7 @@ const CORE_CHALLENGES = [
   },
   {
     id: "warehouse-echoes",
-    revision: 3,
+    revision: 4,
     number: 3,
     title: "Warehouse Echoes",
     subtitle: "The scanner hiccupped and submitted orders twice.",
@@ -245,6 +460,7 @@ const CORE_CHALLENGES = [
       "Order ID follows WH-0001 and should stay unique",
       "Text Cleanup can fix casing and repeated spaces in batches",
       "Bins multiplied by Quantity gives Total Units",
+      "Use Product Code as a Logical relation source to recover missing Product values",
       "Combine Product and Zone using a space, vertical bar and another space",
     ],
     assistant: {
@@ -272,6 +488,7 @@ const CORE_CHALLENGES = [
       { id: "unique-orders", title: "Remove the duplicate orders", kind: "unique", columns: ["Order ID"] },
       { id: "zones", title: "Use one spelling for every warehouse zone", kind: "allowedValues", column: "Zone", expectedType: "Category", values: ["North", "South", "East", "West"] },
       { id: "products", title: "Clean the product names", kind: "allowedValues", column: "Product", expectedType: "Category", values: ["Cable", "Keyboard", "Monitor", "Mouse"] },
+      { id: "warehouse-product-lookup", title: "Recover Products from Product Code", kind: "lookupRecovery", source: "Product Code", target: "Product", minimumFixes: 5 },
       { id: "warehouse-numbers", title: "Clean Bins and Quantity", kind: "scanClean", columns: ["Bins", "Quantity"], expectedTypes: { Bins: "Integer", Quantity: "Integer" } },
       { id: "total-units", title: "Calculate Total Units", kind: "calculatedColumn", target: "Total Units", expectedType: "Integer", formula: "[Bins] * [Quantity]", tolerance: 0 },
       { id: "storage-label", title: "Build the Storage Label", kind: "transformedColumns", operation: "combine", sources: ["Product", "Zone"], target: "Storage Label", separator: " | " },
@@ -407,7 +624,7 @@ const CORE_CHALLENGES = [
   },
   {
     id: "final-final-export",
-    revision: 5,
+    revision: 7,
     number: 6,
     title: "The Final Export",
     subtitle: "One hundred thousand rows and nobody remembers what any of them mean",
@@ -429,9 +646,10 @@ const CORE_CHALLENGES = [
       "Customer ID accepts five digits but an empty Customer ID belongs to an anonymous buyer and is allowed",
       "Description needs trimmed edges and collapsed spaces but keep its original capitalization",
       "StockCode needs uppercase without removing special codes such as POST, D, M, or BANK CHARGES",
-      "Replace EIRE with Ireland before building the Country allowed values list",
+      "Replace EIRE with Emerald Island before building the Country allowed values list",
       "A missing Country can be recovered with Most Common Value inside Customer ID groups",
-      "Rows without a Description have zero Price and should be removed",
+      "Use StockCode as a Logical relation source first because 231 missing Descriptions have one verified answer",
+      "Move the remaining Description gaps to the Data Bin because their StockCode is ambiguous or has no evidence",
       "Normalize Description and StockCode before comparing all eight source columns for duplicates",
       "Split InvoiceDate on whitespace and combine StockCode with Description using a space, vertical bar, and another space",
       "Line Total is Quantity multiplied by Price and the final column order is part of the export",
@@ -502,6 +720,7 @@ const CORE_CHALLENGES = [
       },
       { id: "retail-description-text", title: "Remove the whitespace mess", kind: "textNormalized", column: "Description", trimEdges: true, collapseWhitespace: true, caseMode: "keep" },
       { id: "retail-stock-code-text", title: "Use one StockCode casing", kind: "textNormalized", column: "StockCode", trimEdges: false, collapseWhitespace: false, caseMode: "upper" },
+      { id: "retail-description-lookup", title: "Recover safe Descriptions from StockCode", kind: "lookupRecovery", source: "StockCode", target: "Description", minimumFixes: 200 },
       {
         id: "retail-countries",
         title: "Build the Country list",
@@ -521,7 +740,7 @@ const CORE_CHALLENGES = [
         selector: { numericModulo: 7, remainder: 0 },
         minimumGroups: 200,
       },
-      { id: "retail-descriptions", title: "Remove rows with no product", kind: "noMissing", columns: ["Description"], minimumRows: 98777 },
+      { id: "retail-descriptions", title: "Move unresolved product rows to the Data Bin", kind: "noMissing", columns: ["Description"], minimumRows: 99008 },
       { id: "retail-duplicates", title: "Reveal and remove duplicate transactions", kind: "unique", columns: RETAIL_SOURCE_COLUMNS },
       {
         id: "retail-export-schema",
@@ -545,7 +764,7 @@ const CORE_CHALLENGES = [
       { id: "retail-line-total", title: "Calculate every Line Total", kind: "calculatedColumn", target: "Line Total", expectedType: "Number", formula: "[Quantity] * [Price]", tolerance: 0.01 },
     ],
     rules: [
-      { id: "retail-row-count", title: "Finish with the expected transaction count", kind: "rowCount", minimum: 98777, maximum: 98777 },
+      { id: "retail-row-count", title: "Finish with the expected transaction count", kind: "rowCount", minimum: 99008, maximum: 99008 },
       { id: "retail-cancellations", title: "Keep the cancelled transactions", kind: "minimumMatches", column: "Invoice", operator: "startsWith", value: "C", minimum: 1855 },
       { id: "retail-adjustments", title: "Keep the bad debt adjustments", kind: "minimumMatches", column: "Description", operator: "equals", value: "Adjust bad debt", minimum: 3 },
     ],
@@ -557,7 +776,7 @@ const CORE_CHALLENGES = [
       license: "Creative Commons Attribution 4.0 International",
       licenseUrl: "https://creativecommons.org/licenses/by/4.0/",
       doiUrl: "https://doi.org/10.24432/C5CG6D",
-      changes: "Converted from Excel to CSV, sampled to 100,000 rows, and given controlled spacing, casing, and recoverable Country gaps for this challenge",
+      changes: "Converted from Excel to CSV, sampled to 100,000 rows, given controlled spacing, casing, and recoverable Country gaps, and renamed countries with fictional location titles for this challenge",
     },
   },
 ];
@@ -577,6 +796,50 @@ export function getChallenge(challengeId) {
 
 export function hasCurrentChallengeRevision(challenge, revision) {
   return Boolean(challenge) && Number(revision) === challenge.revision;
+}
+
+function createBootScanRows() {
+  const agents = ["Aisha", "Omar", "Lina", "Sam", "Noor", "Maya", "Yousef", "Sara", "Rami", "Dana", "Alex", "Huda"];
+  const tickets = ["8", "5", "12", "11", "7", "13", "4", "9", "6", "2", "10", "3"];
+  return agents.map((agent, index) => ({
+    Agent: agent,
+    "Tickets Closed": tickets[index],
+  }));
+}
+
+function createBootCategoryRows() {
+  const statuses = ["Open", "Waiting", "Closed", "open", "Open", "CLOSED", "Waiting", " closed ", "Closed", "Open", " waiting ", "Closed", "Open", "Waiting", "Closed"];
+  return statuses.map((status, index) => ({
+    "Request ID": `REQ-${String(index + 1).padStart(3, "0")}`,
+    Status: status,
+  }));
+}
+
+function createBootIssueRows() {
+  const agents = ["Aisha", "Omar", "Lina", "Sam", "Noor", "Maya", "Yousef", "Sara", "Rami", "Dana", "Alex", "Huda", "Nora", "Faris", "Laila", "Zaid", "Mona", "Tariq"];
+  return agents.map((agent, index) => ({
+    Agent: agent,
+    "Daily Target": index === 4 ? "" : index === 9 ? "eight" : index === 14 ? "??" : "8",
+  }));
+}
+
+function createBootRecoveryRows() {
+  return Array.from({ length: 16 }, (_, index) => {
+    const start = 1000 + index * 37;
+    const usage = 12 + (index * 5) % 20;
+    const row = {
+      Shift: `SHIFT-${String(index + 1).padStart(2, "0")}`,
+      "Start Reading": String(start),
+      "End Reading": String(start + usage),
+      Usage: String(usage),
+    };
+    if ([3, 8, 13].includes(index)) row.Usage = index === 8 ? "ERROR" : "";
+    if (index === 15) {
+      row["Start Reading"] = "";
+      row.Usage = "";
+    }
+    return row;
+  });
 }
 
 function createCafeRows() {
@@ -632,9 +895,11 @@ function createSignupRows() {
 
 function createWarehouseRows() {
   const products = ["Cable", "Keyboard", "Monitor", "Mouse"];
+  const productCodes = ["P100", "P200", "P300", "P400"];
   const zones = ["North", "South", "East", "West"];
   const base = Array.from({ length: 150 }, (_, index) => ({
     "Order ID": `WH-${String(index + 1).padStart(4, "0")}`,
+    "Product Code": productCodes[index % productCodes.length],
     Product: products[index % products.length],
     Zone: zones[index % zones.length],
     Bins: String(index % 12 + 1),
@@ -642,6 +907,7 @@ function createWarehouseRows() {
   }));
   base.forEach((row, index) => {
     if (index % 14 === 2) row.Product = `  ${row.Product.toUpperCase()}  `;
+    if (index % 29 === 9) row.Product = "";
     if (index % 17 === 3) row.Zone = row.Zone.toLowerCase();
     if (index % 41 === 5) row["Order ID"] = row["Order ID"].replace("-", "_");
     if (index % 47 === 8) row.Bins = "many";
@@ -736,4 +1002,5 @@ function createRandom(seed) {
 function pick(values, random) {
   return values[Math.floor(random() * values.length)];
 }
+
 import { HELL_CHALLENGES } from "./hellChallengeData.js";

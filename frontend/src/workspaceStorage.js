@@ -3,9 +3,11 @@ const DATABASE_VERSION = 2;
 const STORE_NAME = "workspaces";
 const STORAGE_VERSION_KEY = "cleansheet.storage-version";
 const STORAGE_VERSION = "2";
+const LEGACY_RECIPE_STORAGE_KEY = "cleansheet.cleaning-recipes";
 let saveQueue = Promise.resolve();
 
 export async function initializeCleanSheetStorage(storage = window.localStorage, indexedDB = window.indexedDB) {
+  storage.removeItem(LEGACY_RECIPE_STORAGE_KEY);
   if (storage.getItem(STORAGE_VERSION_KEY) === STORAGE_VERSION) return false;
   for (const key of getCleanSheetStorageKeys(storage)) storage.removeItem(key);
   await deleteCleanSheetDatabase(indexedDB);

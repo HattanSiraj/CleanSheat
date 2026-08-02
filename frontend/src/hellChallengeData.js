@@ -290,7 +290,7 @@ export const HELL_CHALLENGES = [
   },
   {
     id: "hell-missing-value-cult",
-    revision: 1,
+    revision: 2,
     number: 5,
     pack: "hell",
     packOrder: 5,
@@ -305,13 +305,13 @@ export const HELL_CHALLENGES = [
     accent: "hell-green",
     story: [
       "[NULL PATTERN DETECTED] IT IS REPEATING ON PURPOSE",
-      "AVERAGE MEDIAN MODE PREVIOUS DISTRIBUTION // CHOOSE WRONG AND IT SPREADS",
+      "AVERAGE MEDIAN LOGICAL PREVIOUS // CHOOSE WRONG AND IT SPREADS",
       "DO NOT DELETE THE EMPTY ROWS // THEY ARE COUNTING YOU TOO",
     ],
     hints: [
       "Temperature uses Average inside Machine groups and Pressure uses Median inside Shift groups",
-      "Operator uses Most Common Value inside Machine groups",
-      "Condition uses Current Distribution and Recorded At uses Previous Valid Value ordered by Reading ID inside Machine groups",
+      "Machine has one verified Operator and one Condition so recover both with separate Logical relations",
+      "Recorded At uses Previous Valid Value ordered by Reading ID inside Machine groups",
     ],
     assistant: {
       start: "The missing values have formed patterns and I do not like organized blanks",
@@ -333,8 +333,8 @@ export const HELL_CHALLENGES = [
       { id: "missing-shift", title: "Repair the Shift choices", kind: "allowedValues", column: "Shift", expectedType: "Category", values: ["Morning", "Evening", "Night"] },
       { id: "missing-temperature", title: "Fill Temperature with each Machine average", kind: "fillContract", idColumn: "Reading ID", column: "Temperature", expectedType: "Number", method: "average", groupBy: "Machine", tolerance: 0.01 },
       { id: "missing-pressure", title: "Fill Pressure with each Shift median", kind: "fillContract", idColumn: "Reading ID", column: "Pressure", expectedType: "Number", method: "median", groupBy: "Shift", tolerance: 0.01 },
-      { id: "missing-operator", title: "Fill Operator with each Machine mode", kind: "fillContract", idColumn: "Reading ID", column: "Operator", expectedType: "Category", method: "mode", groupBy: "Machine" },
-      { id: "missing-condition", title: "Preserve the Condition distribution", kind: "fillContract", idColumn: "Reading ID", column: "Condition", expectedType: "Category", method: "distribution" },
+      { id: "missing-operator", title: "Recover Operator from Machine", kind: "lookupRecovery", source: "Machine", target: "Operator", minimumFixes: 100 },
+      { id: "missing-condition", title: "Recover Condition from Machine", kind: "lookupRecovery", source: "Machine", target: "Condition", minimumFixes: 100 },
       { id: "missing-time", title: "Carry the previous timestamp within each Machine", kind: "fillContract", idColumn: "Reading ID", column: "Recorded At", expectedType: "Date", method: "previous", groupBy: "Machine", orderBy: "Reading ID" },
       { id: "missing-comment", title: "Allow empty inspector comments", kind: "missingPolicy", column: "Inspector Comment", policy: "allowed", tokens: ["N/A"] },
       { id: "missing-complete", title: "Recover every required reading", kind: "noMissing", columns: ["Temperature", "Pressure", "Operator", "Condition", "Recorded At"] },
@@ -462,8 +462,8 @@ function createLocaleRows() {
 }
 
 function createIdentityRows() {
-  const firstNames = ["Maya", "Omar", "Lina", "Noor", "Alex", "Kenji", "Hattan", "Sara"];
-  const lastNames = ["Stone", "Saleh", "Khan", "Aziz", "Martin", "Sato", "Siraj", "Miller"];
+  const firstNames = ["Maya", "Omar", "Lina", "Noor", "Alex", "Kenji", "Gleegle", "Sara"];
+  const lastNames = ["Stone", "Saleh", "Khan", "Aziz", "Martin", "Sato", "Sambosa", "Miller"];
   const countries = ["Saudi Arabia", "United States", "Germany", "Japan"];
   const sources = ["Event", "Website", "Referral", "Paper Form"];
   const base = Array.from({ length: 3040 }, (_, index) => {
@@ -564,12 +564,7 @@ function createSchemaRows() {
 function createMissingRows() {
   const machines = ["Mixer", "Press", "Cutter", "Kiln"];
   const shifts = ["Morning", "Evening", "Night"];
-  const operators = {
-    Mixer: ["Maya", "Maya", "Omar"],
-    Press: ["Sara", "Sara", "Lina"],
-    Cutter: ["Noor", "Noor", "Alex"],
-    Kiln: ["Hattan", "Hattan", "Kenji"],
-  };
+  const operators = { Mixer: "Maya", Press: "Sara", Cutter: "Noor", Kiln: "Bob" };
   const conditions = ["Stable", "Stable", "Watch", "Critical"];
   return Array.from({ length: 6000 }, (_, index) => {
     const machine = machines[index % machines.length];
@@ -582,7 +577,7 @@ function createMissingRows() {
       "Recorded At": `2026-07-${pad(day)}`,
       Temperature: (35 + machines.indexOf(machine) * 12 + index % 9 * 0.5).toFixed(2),
       Pressure: (90 + shifts.indexOf(shift) * 18 + index % 11).toFixed(2),
-      Operator: operators[machine][index % operators[machine].length],
+      Operator: operators[machine],
       Condition: conditions[index % conditions.length],
       "Inspector Comment": index % 7 ? "" : "Checked",
     };
